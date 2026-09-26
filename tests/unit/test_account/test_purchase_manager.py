@@ -3,8 +3,7 @@
 PurchaseManager — братский класс OrderManager (см. test_order_manager.py):
 `get_purchase_details` под капотом переиспользует `OrderManager.get_order_details`
 на том же `account`, а `get_my_purchases` пагинируется точно так же, как
-`ProfileManager.get_my_sells` (см. test_profile_manager.py::TestGetMySells,
-включая задокументированную там особенность с отбрасыванием последней страницы).
+`ProfileManager.get_my_sells` (см. test_profile_manager.py::TestGetMySells).
 """
 
 from unittest.mock import AsyncMock, MagicMock
@@ -57,12 +56,8 @@ class TestGetPurchaseDetails:
 
 class TestGetMyPurchases:
     @pytest.mark.asyncio
-    async def test_single_page_without_next_page_marker_returns_empty(self, manager, account):
-        """
-        Как и в ProfileManager.get_my_sells: страница без 'next_page' брейкает
-        цикл ДО добавления её 'sells' в data, поэтому единственная страница без
-        next_page в результат не попадёт.
-        """
+    async def test_single_page_without_next_page_marker_returns_its_purchases(self, manager, account):
+        """Как и в ProfileManager.get_my_sells: единственная страница без 'next_page' попадает в результат."""
         account._client.get_my_purchases.return_value = "<html></html>"
         account._parser.parse_my_sells.return_value = {
             "sells": [
@@ -80,10 +75,11 @@ class TestGetMyPurchases:
             ]
         }
         result = await manager.get_my_purchases()
-        assert result == []
+        assert [order.order_id for order in result] == ["1"]
+        account._client.get_next_purchases.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_multiple_pages_last_page_data_is_dropped(self, manager, account, monkeypatch):
+    async def test_multiple_pages_include_last_page(self, manager, account, monkeypatch):
         monkeypatch.setattr("asyncio.sleep", AsyncMock())
         account._client.get_my_purchases.return_value = "<html></html>"
         page1 = {
@@ -119,9 +115,8 @@ class TestGetMyPurchases:
         }
         account._parser.parse_my_sells.side_effect = [page1, page2]
         result = await manager.get_my_purchases()
-        assert len(result) == 1
-        assert result[0].order_id == "1"
-        assert isinstance(result[0], Purchase)
+        assert [order.order_id for order in result] == ["1", "2"]
+        assert all(isinstance(order, Purchase) for order in result)
         account._client.get_next_purchases.assert_awaited_once_with("page-2")
 
     @pytest.mark.asyncio

@@ -78,13 +78,13 @@ class ProfileManager:
                     html = await self._account._client.get_next_sells(next_page_id)
                 stage = "парсинга данных"
                 new_data = self._account._parser.parse_my_sells(html)
+                for i in new_data["sells"]:
+                    data.append(i)
+                count_of_sells += len(new_data["sells"])
                 next_page_id = new_data.get("next_page")
                 if not next_page_id:
                     next_stage = False
                     break
-                for i in new_data["sells"]:
-                    data.append(i)
-                count_of_sells += len(new_data["sells"])
                 if limit != 0 and count_of_sells >= limit:
                     next_stage = False
                     break

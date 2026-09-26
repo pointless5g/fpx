@@ -60,12 +60,10 @@ class TestGetUserData:
 
 class TestGetMySells:
     @pytest.mark.asyncio
-    async def test_single_page_without_next_page_marker_returns_empty(self, manager, account):
+    async def test_single_page_without_next_page_marker_returns_its_sells(self, manager, account):
         """
-        Документирует текущее поведение реализации: цикл добавляет 'sells' страницы
-        в результат ТОЛЬКО если у этой же страницы найден 'next_page' (иначе брейк
-        происходит раньше append). Так что единственная страница без next_page
-        не попадёт в результат вообще.
+        Страница без 'next_page' — последняя (у продавца с небольшой историей
+        единственная), её продажи тоже попадают в результат (#25).
         """
         account._client.get_my_sells.return_value = "<html></html>"
         account._parser.parse_my_sells.return_value = {
@@ -84,14 +82,12 @@ class TestGetMySells:
             ]
         }
         result = await manager.get_my_sells()
-        assert result == []
+        assert [order.order_id for order in result] == ["1"]
+        account._client.get_next_sells.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_multiple_pages_last_page_data_is_dropped(self, manager, account, monkeypatch):
-        """
-        Аналогично: при пагинации данные последней (без next_page) страницы
-        не добавляются в результат — только страницы, у которых был next_page.
-        """
+    async def test_multiple_pages_include_last_page(self, manager, account, monkeypatch):
+        """При пагинации продажи последней (без next_page) страницы тоже возвращаются (#25)."""
         monkeypatch.setattr("asyncio.sleep", AsyncMock())
         account._client.get_my_sells.return_value = "<html></html>"
         page1 = {
@@ -127,9 +123,9 @@ class TestGetMySells:
         }
         account._parser.parse_my_sells.side_effect = [page1, page2]
         result = await manager.get_my_sells()
-        assert len(result) == 1
-        assert result[0].order_id == "1"
-        assert isinstance(result[0], Order)
+        assert [order.order_id for order in result] == ["1", "2"]
+        assert all(isinstance(order, Order) for order in result)
+        account._client.get_next_sells.assert_awaited_once_with("page-2")
 
     @pytest.mark.asyncio
     async def test_limit_stops_pagination(self, manager, account, monkeypatch):

@@ -85,13 +85,18 @@ class PurchaseRunner:
 
     def _compare_purchase_cache(self) -> list[Purchase]:
         """
-        Сравнивает старый и новый кеш покупок
+        Сравнивает старый и новый кеш покупок.
+
+        Покупка считается событием, если она новая или сменила статус. Остальные поля
+        строки меняются и без события: дата «Сегодня, 23:59» в полночь становится
+        «Вчера, 23:59», поэтому в сравнении они не участвуют.
         """
         result: list[Purchase] = []
-        if self.runner._cache["purchases"] != self.runner._cache["old_purchases"]:
-            for order in self.runner._cache["purchases"]:
-                if order not in self.runner._cache["old_purchases"]:
-                    result.append(Purchase(**order))
+        old_statuses = {order["order_id"]: order["status"] for order in self.runner._cache["old_purchases"]}
+        for order in self.runner._cache["purchases"]:
+            if order["order_id"] in old_statuses and old_statuses[order["order_id"]] == order["status"]:
+                continue
+            result.append(Purchase(**order))
         return result
 
     async def _check_handler(self, handler: dict[str, Any], order: Purchase, state_ctx: FSMContext | None) -> bool:

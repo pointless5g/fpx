@@ -82,13 +82,18 @@ class OrderRunner:
 
     def _compare_order_cache(self) -> list[Order]:
         """
-        Сравнивает старый и новый кеш заказов
+        Сравнивает старый и новый кеш заказов.
+
+        Заказ считается событием, если он новый или сменил статус. Остальные поля
+        строки меняются и без события: дата «Сегодня, 23:59» в полночь становится
+        «Вчера, 23:59», поэтому в сравнении они не участвуют.
         """
         result: list[Order] = []
-        if self.runner._cache["orders"] != self.runner._cache["old_orders"]:
-            for order in self.runner._cache["orders"]:
-                if order not in self.runner._cache["old_orders"]:
-                    result.append(Order(**order))
+        old_statuses = {order["order_id"]: order["status"] for order in self.runner._cache["old_orders"]}
+        for order in self.runner._cache["orders"]:
+            if order["order_id"] in old_statuses and old_statuses[order["order_id"]] == order["status"]:
+                continue
+            result.append(Order(**order))
         return result
 
     async def _check_handler(self, handler: dict[str, Any], order: Order, state_ctx: FSMContext | None) -> bool:

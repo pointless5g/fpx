@@ -79,6 +79,18 @@ class TestCompareOrderCache:
         assert isinstance(result[0], Order)
         assert result[0].order_id == "1"
 
+    def test_date_text_change_is_not_an_event(self, order_runner, runner):
+        """В полночь «Сегодня» становится «Вчера»: это не новый заказ."""
+        runner._cache["old_orders"] = [cache_row(order_time="Сегодня, 23:59")]
+        runner._cache["orders"] = [cache_row(order_time="Вчера, 23:59")]
+        assert order_runner._compare_order_cache() == []
+
+    def test_status_change_is_an_event(self, order_runner, runner):
+        runner._cache["old_orders"] = [cache_row(status="Оплачен")]
+        runner._cache["orders"] = [cache_row(status="Закрыт")]
+        result = order_runner._compare_order_cache()
+        assert [(order.order_id, order.status) for order in result] == [("1", "Закрыт")]
+
 
 class TestCheckHandler:
     @pytest.mark.asyncio
@@ -400,3 +412,17 @@ class TestOrderPage:
         await order_runner._check_order_page()
         processed = [call.args[0].order_id for call in order_runner._process_single_order.await_args_list]
         assert processed == ["A2"]
+
+
+def cache_row(**overrides):
+    """Строка кеша в том виде, в каком её пишет раннер."""
+    row = {
+        "order_id": "1",
+        "order_time": "Сегодня, 12:00",
+        "client_name": "Bob",
+        "price": 100.0,
+        "name": "Товар",
+        "status": "Оплачен",
+    }
+    row.update(overrides)
+    return row

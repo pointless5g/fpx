@@ -196,3 +196,132 @@ class TestBanChat:
         account._client.ban_chat.side_effect = Exception("boom")
         with pytest.raises(fpx_err.FpxBanChatError):
             await manager.ban_chat("123")
+
+
+def _node(messages, name="users-1-2", node_id=555):
+    """Объект chat_node ответа /runner/; messages - (ID, автор, текст)."""
+    return {
+        "type": "chat_node",
+        "id": name,
+        "tag": "t1",
+        "data": {
+            "node": {"id": node_id, "name": name, "silent": False},
+            "messages": [
+                {"id": msg_id, "author": author, "html": f'<div class="chat-msg-text">{text}</div>'}
+                for msg_id, author, text in messages
+            ],
+        },
+    }
+
+
+@pytest.fixture
+def sender(account):
+    from fpx._parsers import FpxParser
+
+    account.data.user_id = "1"
+    account._parser = FpxParser()
+    account._client.runner_request = AsyncMock()
+    return ChatManager(account)
+
+
+class TestSend:
+    @pytest.mark.asyncio
+    async def test_the_new_message_id_comes_from_the_same_request(self, sender, account):
+        account._client.runner_request.return_value = {
+            "objects": [_node([(10, 2, "Логин"), (11, 1, "⁡Готово"), (12, 2, "Спасибо")])],
+            "response": {"error": None},
+        }
+        sent = await sender.send("users-1-2", "Готово", mark_bot=True)
+        assert (sent.id, sent.chat_name, sent.text) == (11, "users-1-2", "Готово")
+        objects, request = account._client.runner_request.await_args.args
+        assert request == {
+            "action": "chat_message",
+            "data": {"node": "users-1-2", "last_message": -1, "content": "⁡Готово"},
+        }
+        assert objects[0]["type"] == "chat_node" and objects[0]["data"]["node"] == "users-1-2"
+        account._client.get_current_chat.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_without_the_mark_the_same_words_are_the_receipt(self, sender, account):
+        account._client.runner_request.return_value = {
+            "objects": [_node([(11, 1, "Привет"), (12, 1, "Готово")])],
+            "response": {"error": None},
+        }
+        assert (await sender.send("users-1-2", "Привет")).id == 11
+
+    @pytest.mark.asyncio
+    async def test_a_receipt_missing_from_the_answer_is_no_id(self, sender, account):
+        account._client.runner_request.return_value = {"objects": [], "response": {"error": None}}
+        assert (await sender.send("users-1-2", "Готово", mark_bot=True)).id is None
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_under_response_is_a_refusal(self, sender, account):
+        account._client.runner_request.return_value = {
+            "objects": [],
+            "response": {"error": "Нельзя отправлять сообщения слишком часто."},
+        }
+        with pytest.raises(fpx_err.FpxMessageRefusedError) as refused:
+            await sender.send("users-1-2", "Готово")
+        assert refused.value.error_message == "Нельзя отправлять сообщения слишком часто."
+        assert refused.value.is_flood is True
+
+    @pytest.mark.asyncio
+    async def test_no_answer_to_the_action_is_a_refusal(self, sender, account):
+        account._client.runner_request.return_value = {"objects": [], "response": False}
+        with pytest.raises(fpx_err.FpxMessageRefusedError) as refused:
+            await sender.send("users-1-2", "Готово")
+        assert refused.value.error_message is None
+
+    @pytest.mark.asyncio
+    async def test_a_request_that_may_have_gone_is_an_unknown_outcome(self, sender, account):
+        account._client.runner_request.side_effect = fpx_err.FpxRequestOutcomeUnknownError("502")
+        with pytest.raises(fpx_err.FpxMessageOutcomeUnknownError):
+            await sender.send("users-1-2", "Готово")
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_answer_is_an_unknown_outcome(self, sender, account):
+        account._client.runner_request.side_effect = ValueError("not json")
+        with pytest.raises(fpx_err.FpxMessageOutcomeUnknownError):
+            await sender.send("users-1-2", "Готово")
+
+    @pytest.mark.asyncio
+    async def test_a_request_that_never_left_is_not_sent(self, sender, account):
+        account._client.runner_request.side_effect = fpx_err.FpxRequestError("429")
+        with pytest.raises(fpx_err.FpxMessageDeliverError) as failed:
+            await sender.send("users-1-2", "Готово")
+        assert not isinstance(failed.value, fpx_err.FpxMessageOutcomeUnknownError)
+
+    @pytest.mark.asyncio
+    async def test_a_picture_is_sent_by_id_and_found_by_its_link(self, sender, account):
+        picture = {
+            "id": 13,
+            "author": 1,
+            "html": '<a class="chat-img-link" href="https://sfunpay.com/s/chat/x.jpg"><img alt="x.png"></a>',
+        }
+        node = _node([])
+        node["data"]["messages"] = [picture]
+        account._client.runner_request.return_value = {"objects": [node], "response": {"error": None}}
+        sent = await sender.send("users-1-2", image_id=77)
+        assert (sent.id, sent.image_link) == (13, "https://sfunpay.com/s/chat/x.jpg")
+        _objects, request = account._client.runner_request.await_args.args
+        assert request["data"]["image_id"] == 77 and request["data"]["content"] == ""
+
+    @pytest.mark.asyncio
+    async def test_a_numeric_chat_id_is_resolved_to_its_name_once(self, sender, account):
+        account.data._node_names["555"] = "users-1-2"
+        account._client.runner_request.return_value = {"objects": [], "response": {"error": None}}
+        sent = await sender.send("555", "Привет")
+        assert sent.chat_name == "users-1-2"
+
+
+class TestLegacySendRefusal:
+    @pytest.mark.asyncio
+    async def test_a_refusal_under_response_is_no_longer_a_success(self, manager, account):
+        account.data._node_names["chat-1"] = "users-1-2"
+        account.data._csrf_token = "tok"
+        account._client.send_message_request.return_value = {
+            "objects": [],
+            "response": {"error": "Нельзя отправлять сообщения слишком часто."},
+        }
+        with pytest.raises(fpx_err.FpxMessageRefusedError):
+            await manager.send_message("chat-1", "hello")

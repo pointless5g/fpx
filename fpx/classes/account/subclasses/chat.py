@@ -1,7 +1,14 @@
 from typing import Any, cast
 
-from fpx.models.chat import Chat, ChatData, Message
+import httpx
+
+from fpx.models.chat import Chat, ChatData, Message, SentMessage
 from fpx.utils import errors as fpx_err
+
+# Метка бота в начале текста: по ней бот узнаёт свои сообщения (так же делает FunPay Cardinal).
+BOT_MARK = "\u2061"
+# Такого тега у FunPay нет, поэтому объект chat_node приходит с данными.
+_EMPTY_TAG = "00000000"
 
 
 class ChatManager:
@@ -62,12 +69,110 @@ class ChatManager:
             )
         except Exception as e:
             raise fpx_err.FpxMessageDeliverError(f"Не удалось выполнить {step}. Ошибка: {e}") from e
-        if response.get("error") is None:
-            return cast(dict[str, Any], response)
-        else:
-            error_code = response.get("error", "400")
-            error_msg = response.get("msg", "Неизвестная ошибка")
-            raise fpx_err.FpxMessageDeliverError(f"Сервер вернул ошибку: {error_code} - {error_msg}")
+        _raise_refusal(response)
+        return cast(dict[str, Any], response)
+
+    async def send(
+        self,
+        chat_id: str | int,
+        text: str | None = None,
+        *,
+        image_id: int | str | None = None,
+        mark_bot: bool = False,
+    ) -> SentMessage:
+        """
+        Отправляет сообщение или картинку и возвращает ID нового сообщения.
+
+        Отправка и чтение чата идут одним запросом /runner/, как на сайте FunPay, поэтому
+        страница чата не загружается, а ID отправленного сообщения берётся из ответа.
+
+        Args:
+            chat_id (str | int): ID чата (node) или имя переписки users-<ID>-<ID>.
+            text (str | None): Текст сообщения.
+            image_id (int | str | None): ID картинки из upload_image / upload_image_bytes.
+            mark_bot (bool): Начать текст с метки бота U+2061. По ней приём событий
+                отмечает сообщение как by_bot, и ID находится надёжнее.
+
+        Returns:
+            SentMessage: ID нового сообщения (None, если его не оказалось в ответе) и имя переписки.
+
+        Raises:
+            FpxMessageRefusedError: FunPay отказал (error_message - его текст); сообщение не отправлено.
+            FpxMessageOutcomeUnknownError: ответ не получен или не читается; сообщение могло уйти.
+            FpxMessageDeliverError: запрос не ушёл (нет соединения, FunPay ответил 429); сообщение не отправлено.
+        """
+        node = await self._node_name(chat_id)
+        content = "" if image_id is not None else f"{BOT_MARK if mark_bot else ''}{text or ''}"
+        data: dict[str, Any] = {"node": node, "last_message": -1, "content": content}
+        if image_id is not None:
+            data["image_id"] = int(image_id)
+        chat_node = {
+            "type": "chat_node",
+            "id": node,
+            "tag": _EMPTY_TAG,
+            "data": {"node": node, "last_message": -1, "content": ""},
+        }
+        try:
+            response = await self._account._client.runner_request([chat_node], {"action": "chat_message", "data": data})
+        except fpx_err.FpxRequestOutcomeUnknownError as e:
+            raise fpx_err.FpxMessageOutcomeUnknownError(f"Сообщение в чат {node} могло уйти: {e}") from e
+        except (fpx_err.FpxRequestError, httpx.TransportError) as e:
+            raise fpx_err.FpxMessageDeliverError(f"Сообщение в чат {node} не отправлено: {e}") from e
+        except Exception as e:
+            raise fpx_err.FpxMessageOutcomeUnknownError(f"Ответ на отправку в чат {node} не читается: {e}") from e
+        _raise_refusal(response, nested_only=True)
+        return await self._receipt(response, node, text, image_id is not None, mark_bot)
+
+    async def _node_name(self, chat_id: str | int) -> str:
+        """Имя переписки users-<ID>-<ID> для ID чата: из кеша или со страницы чата."""
+        if str(chat_id).startswith("users-"):
+            return str(chat_id)
+        if chat_id not in self._account.data._node_names:
+            await self.get_chat_data(chat_id)
+        return str(self._account.data._node_names[chat_id])
+
+    async def _receipt(
+        self, response: dict[str, Any], node: str, text: str | None, is_image: bool, marked: bool
+    ) -> SentMessage:
+        """Новейшее своё сообщение в чате из ответа: картинка, помеченный текст или тот же текст."""
+        if self._account.data.user_id is None:
+            await self._account.profile.get_user_data()
+        my_id = int(self._account.data.user_id)
+        received = response.get("objects")
+        objects: list[Any] = received if isinstance(received, list) else []
+        chat = next(
+            (
+                obj.get("data")
+                for obj in objects
+                if isinstance(obj, dict)
+                and obj.get("type") == "chat_node"
+                and isinstance(obj.get("data"), dict)
+                and node in (str((obj["data"].get("node") or {}).get("name")), str(obj.get("id")))
+            ),
+            None,
+        )
+        if chat is None:
+            return SentMessage(id=None, chat_name=node, text=text)
+        messages = self._account._parser.parse_runner_messages(chat.get("messages") or [], {}, my_id)
+        wanted = (text or "").strip()
+        for message in reversed(messages):
+            if not message["is_own"]:
+                continue
+            if is_image:
+                found = message["image_link"] is not None
+            elif marked:
+                found = message["by_bot"]
+            else:
+                found = message["image_link"] is None and message["message"].strip() == wanted
+            if found:
+                return SentMessage(
+                    id=message["node_id"],
+                    chat_name=node,
+                    text=None if is_image else message["message"],
+                    image_link=message["image_link"],
+                    html=message["html"],
+                )
+        return SentMessage(id=None, chat_name=node, text=text)
 
     async def get_chat_data(self, chat_id: int | str, last_message_node_id: int | str | None = None) -> ChatData:
         """
@@ -153,12 +258,8 @@ class ChatManager:
             )
         except Exception as e:
             raise fpx_err.FpxMessageDeliverError(f"Не удалось выполнить {step}. Ошибка: {e}") from e
-        if response.get("error") is None:
-            return cast(dict[str, Any], response)
-        else:
-            error_code = response.get("error", "400")
-            error_msg = response.get("msg", "Неизвестная ошибка")
-            raise fpx_err.FpxMessageDeliverError(f"Сервер вернул ошибку: {error_code} - {error_msg}")
+        _raise_refusal(response)
+        return cast(dict[str, Any], response)
 
     async def ban_chat(self, chat_id: int | str) -> bool:
         """
@@ -193,3 +294,23 @@ class ChatManager:
         error_code = response.get("error", "400")
         error_msg = response.get("msg", "Неизвестная ошибка")
         raise fpx_err.FpxBanChatError(f"Сервер вернул ошибку: {error_code} - {error_msg}")
+
+
+def _raise_refusal(response: Any, *, nested_only: bool = False) -> None:
+    """
+    Отказ FunPay на отправку.
+
+    FunPay кладёт ответ на действие в поле response: {"objects": [...], "response": {"error": ...}}.
+    Ошибка на верхнем уровне - прежний разбор, он остаётся для совместимости.
+    """
+    if not isinstance(response, dict):
+        raise fpx_err.FpxMessageRefusedError(None)
+    answer = response.get("response")
+    if isinstance(answer, dict):
+        if answer.get("error") is not None:
+            raise fpx_err.FpxMessageRefusedError(str(answer.get("error")))
+        return
+    if nested_only:
+        raise fpx_err.FpxMessageRefusedError(None)
+    if response.get("error") is not None:
+        raise fpx_err.FpxMessageRefusedError(f"{response.get('error')} - {response.get('msg', 'Неизвестная ошибка')}")

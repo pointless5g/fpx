@@ -18,6 +18,7 @@ from fpx.classes.account.subclasses.profile import ProfileManager
 from fpx.classes.account.subclasses.purchase import PurchaseManager
 from fpx.classes.account.subclasses.review import ReviewManager
 from fpx.middlewares._request_engine import RequestEngine
+from fpx.utils import errors as fpx_err
 from fpx.utils.errors import FpxRefreshCookieError
 
 
@@ -68,6 +69,22 @@ class Account:
 
         result = await self._client.upload_image(image_data)
         return int(result["fileId"])
+
+    async def upload_image_bytes(self, image: bytes, file_name: str = "image.png") -> int:
+        """
+        Загрузка изображения на FunPay из памяти.
+
+        Returns:
+            int: ID изображения на FunPay, для chat.send(chat_id, image_id=...).
+
+        Raises:
+            FpxImageUploadError: FunPay не принял картинку.
+        """
+        result = await self._client.upload_image(image, file_name)
+        try:
+            return int(result["fileId"])
+        except (KeyError, TypeError, ValueError) as e:
+            raise fpx_err.FpxImageUploadError(f"FunPay не вернул ID картинки: {result!r:.200}") from e
 
     async def _refresh_cookies(self) -> Optional[int]:
         cookies = await self._client.refresh_session_cookies()

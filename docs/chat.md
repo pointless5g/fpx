@@ -84,6 +84,29 @@ for chat in chats:
 await fp.account.chat.send_message("12345678", "Привет")
 ```
 
+### `await fp.account.chat.send(chat_id, text=None, *, image_id=None, mark_bot=False)`
+
+Отправляет текст или картинку и возвращает `SentMessage` с ID нового сообщения. Отправка и
+чтение чата идут одним запросом `/runner/`, как на сайте: страница чата не загружается.
+
+```python
+sent = await fp.account.chat.send("users-1000-2000", "Готово!", mark_bot=True)
+print(sent.id)  # ID сообщения в чате; None, если FunPay не вернул его в ответе
+```
+
+- `chat_id` — имя переписки `users-<ID>-<ID>` или числовой ID чата.
+- `mark_bot=True` — текст начинается с метки бота U+2061; приём событий отдаёт такое
+  сообщение с `by_bot=True` и без метки в тексте.
+- Картинка: `image_id = await fp.account.upload_image_bytes(data)`, затем `send(chat_id, image_id=image_id)`.
+
+Ошибки:
+
+| Исключение | Что значит | Можно отправить ещё раз? |
+|---|---|---|
+| `FpxMessageRefusedError` | FunPay отказал; `error_message` — его текст, `is_flood` — слишком часто | да, если это флуд — после паузы |
+| `FpxMessageOutcomeUnknownError` | Ответ не получен: сообщение могло уйти | осторожно: можно задвоить |
+| `FpxMessageDeliverError` (прочие) | Запрос не ушёл: нет соединения, 429 | да |
+
 ### `await fp.account.chat.send_image(chat_id, image_id)`
 
 Отправить изображение в чат по его ID.

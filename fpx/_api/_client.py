@@ -5,6 +5,7 @@ from typing import Any, cast
 import httpx
 
 from fpx.models.lots import LotCreationFields, LotEditor
+from fpx.utils import errors as fpx_err
 
 
 class FunPayClient:
@@ -24,14 +25,18 @@ class FunPayClient:
 
         return r
 
-    async def runner_request(self, objects: list[dict[str, Any]]) -> dict[str, Any]:
+    async def runner_request(
+        self, objects: list[dict[str, Any]], request: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """
         Запрашивает объекты через POST /runner/, как это делает сайт FunPay.
 
         Объект описывается типом, ID и тегом последней известной версии.
         FunPay возвращает только объекты, чей тег отличается от переданного.
+        request - действие в том же запросе (например, отправка сообщения): ответ на него
+        приходит в поле response, а объекты уже учитывают его.
         """
-        payload = {"objects": json.dumps(objects), "request": "false"}
+        payload = {"objects": json.dumps(objects), "request": json.dumps(request) if request else "false"}
         headers = {"X-Requested-With": "XMLHttpRequest"}
         r = await self._account._request_engine.execute("POST", "/runner/", data=payload, headers=headers)
         return cast(dict[str, Any], r.json())
@@ -215,12 +220,14 @@ class FunPayClient:
         r = await self._account._request_engine.execute("GET", f"/lots/{lot_category_id}/")
         return r.text
 
-    async def upload_image(self, file_bytes: bytes) -> dict[str, Any]:
+    async def upload_image(self, file_bytes: bytes, file_name: str = "image.png") -> dict[str, Any]:
         headers = {"X-Requested-With": "XMLHttpRequest"}
         r = await self._account._request_engine.execute(
-            "POST", "/file/addChatImage", files={"file": ("image.png", file_bytes, "image/png")}, headers=headers
+            "POST", "/file/addChatImage", files={"file": (file_name, file_bytes, "image/png")}, headers=headers
         )
-        return r.json()
+        if r.status_code != 200:
+            raise fpx_err.FpxImageUploadError(f"FunPay не принял картинку: HTTP {r.status_code}")
+        return cast(dict[str, Any], r.json())
 
     async def find_category(self, target: str) -> dict[str, Any]:
         headers = {"X-Requested-With": "XMLHttpRequest"}

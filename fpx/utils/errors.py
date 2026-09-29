@@ -91,6 +91,49 @@ class FpxMessageDeliverError(FpxAccountError):
         super().__init__(message)
 
 
+class FpxMessageRefusedError(FpxMessageDeliverError):
+    """
+    FunPay ответил на отправку отказом: сообщение не отправлено.
+
+    error_message - текст отказа FunPay (None, если FunPay не объяснил), is_flood - отказ за
+    слишком частые сообщения: повтор имеет смысл после паузы.
+    """
+
+    FLOOD_MESSAGES = frozenset(
+        {
+            "Нельзя отправлять сообщения слишком часто.",
+            "You cannot send messages too frequently.",
+            "Не можна надсилати повідомлення занадто часто.",
+            "Нельзя слишком часто отправлять сообщения разным пользователям.",
+            "Не можна надто часто надсилати повідомлення різним користувачам.",
+            "You cannot message multiple users too frequently.",
+        }
+    )
+
+    def __init__(self, error_message: str | None = None) -> None:
+        self.error_message = error_message
+        self.is_flood = error_message in self.FLOOD_MESSAGES
+        super().__init__(f"FunPay не отправил сообщение: {error_message or 'без объяснения'}")
+
+
+class FpxMessageOutcomeUnknownError(FpxMessageDeliverError):
+    """
+    Неизвестно, отправлено ли сообщение: запрос мог дойти, а ответ - нет.
+
+    Повторная отправка может задвоить сообщение; безопаснее проверить чат.
+    """
+
+    def __init__(self, message: str = "Неизвестно, отправлено ли сообщение") -> None:
+        super().__init__(message)
+
+
+class FpxImageUploadError(FpxAccountError):
+    """FunPay не принял картинку."""
+
+    def __init__(self, message: str = "FunPay не принял картинку") -> None:
+        super().__init__(message)
+
+
 class FpxRaisingLotError(FpxAccountError):
     """Ошибка при поднятии лотов."""
 

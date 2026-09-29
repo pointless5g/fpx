@@ -76,6 +76,22 @@ class Message:
 
 
 @dataclass
+class SentMessage:
+    """
+    Сообщение, которое FunPay принял.
+
+    id - ID нового сообщения в чате; None, если FunPay принял сообщение, но в ответе его не
+    оказалось (тогда оно придёт в чат само).
+    """
+
+    id: int | None
+    chat_name: str
+    text: str | None = None
+    image_link: str | None = None
+    html: str | None = field(default=None, repr=False)
+
+
+@dataclass
 class ChatData:
     node_name: str
     csrf_token: str

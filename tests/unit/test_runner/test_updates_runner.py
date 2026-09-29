@@ -7,6 +7,7 @@ import pytest
 
 from fpx._parsers import FpxParser
 from fpx.classes.runner.runner import Runner
+from fpx.classes.runner.subclasses._updates import POSITIONS_KEY
 from fpx.models.chat import Message
 from fpx.utils import errors as fpx_err
 from fpx.utils.storage.memory import MemoryStorage
@@ -135,6 +136,58 @@ class TestWarmUp:
         await warm_up(updates, account)
         assert updates._events_dirty is False
         assert updates._ready == set()
+
+
+class CountingStorage(MemoryStorage):
+    def __init__(self):
+        super().__init__()
+        self.writes = 0
+
+    async def update_data(self, chat_id, **kwargs):
+        self.writes += 1
+        await super().update_data(chat_id, **kwargs)
+
+
+class TestPositions:
+    @pytest.mark.asyncio
+    async def test_warm_up_writes_the_place_it_starts_from(self, updates, account, runner):
+        await warm_up(updates, account, ("1", 100, "a"), ("2", 90, "b"))
+        assert await runner.storage.get_data(POSITIONS_KEY) == {
+            "chats": {"1": "100", "2": "90"},
+            "watermark": 100,
+            "statuses": {},
+        }
+
+    @pytest.mark.asyncio
+    async def test_warm_up_resumes_from_the_saved_place(self, updates, account, runner):
+        await runner.storage.update_data(POSITIONS_KEY, chats={"1": "100"}, watermark=100, statuses={})
+        await warm_up(updates, account, ("1", 103, "a"), ("2", 101, "b"), ("3", 90, "c"))
+        # Чат 1 догрузится после сообщения 100, новый чат 2 - после водяного знака.
+        assert set(updates._pending) == {"1", "2"}
+        assert updates._watermark == 100
+        assert runner._chat.get_last_id("1") == "100"
+
+    @pytest.mark.asyncio
+    async def test_a_place_that_does_not_read_is_ignored(self, updates, account, runner):
+        await runner.storage.update_data(POSITIONS_KEY, chats="мусор", watermark="x")
+        await warm_up(updates, account, ("1", 100, "a"))
+        assert updates._pending == {}
+        assert runner._chat._chat_last_ids == {"1": "100"}
+
+    @pytest.mark.asyncio
+    async def test_an_idle_tick_does_not_write_the_storage(self, updates, account, runner):
+        runner.storage = CountingStorage()
+        await warm_up(updates, account, ("1", 100, "a"))
+        account._client.runner_request.side_effect = [respond(), respond()]
+        await updates._check_updates()
+        await updates._check_updates()
+        assert runner.storage.writes == 1
+
+    @pytest.mark.asyncio
+    async def test_a_runner_without_storage_keeps_no_place(self, updates, account, runner):
+        runner.storage = None
+        await warm_up(updates, account, ("1", 100, "a"))
+        assert runner._chat._chat_last_ids == {"1": "100"}
 
 
 class TestRequest:

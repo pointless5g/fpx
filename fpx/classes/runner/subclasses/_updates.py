@@ -18,11 +18,43 @@ _EMPTY_TAG = "00000000"
 
 _ORDER_HANDLERS = ("order", "new_order", "confirmed_order", "refund", "order_command")
 _PURCHASE_HANDLERS = ("purchase", "new_purchase", "confirmed_purchase", "purchase_refund")
+# Ключ в storage, под которым раннер хранит, докуда он дочитал: ID последнего сообщения
+# каждого чата, водяной знак и статусы заказов и покупок с первых страниц.
+POSITIONS_KEY = "fpx:updates"
+# Страницы, чьи статусы переживают перезапуск, и ключ их кеша в раннере.
+_STATUS_SOURCES = {"orders": "orders", "purchases": "purchases"}
 
 
 def _new_tag() -> str:
     """Случайный тег: FunPay пришлёт объект целиком, как клиенту без кеша."""
     return secrets.token_hex(4)
+
+
+@dataclass
+class _Positions:
+    """Докуда раннер дочитал: сохраняется в storage и читается при прогреве."""
+
+    chats: dict[str, str]
+    watermark: int
+    # {источник: {ID заказа: статус}} для страниц с зарегистрированными хендлерами.
+    statuses: dict[str, dict[str, str]]
+
+    def dump(self) -> dict[str, Any]:
+        return {"chats": self.chats, "watermark": self.watermark, "statuses": self.statuses}
+
+    @classmethod
+    def load(cls, data: dict[str, Any]) -> "_Positions | None":
+        try:
+            return cls(
+                chats={str(chat): str(last) for chat, last in data["chats"].items()},
+                watermark=int(data["watermark"]),
+                statuses={
+                    str(source): {str(order): str(status) for order, status in orders.items()}
+                    for source, orders in data.get("statuses", {}).items()
+                },
+            )
+        except (KeyError, TypeError, ValueError, AttributeError):
+            return None
 
 
 @dataclass
@@ -62,25 +94,96 @@ class UpdatesRunner:
         # ID самого нового сообщения на момент запуска: всё, что старше, уже не событие.
         self._watermark = 0
         self._ready: set[str] = set()
+        # Страницы, чей кеш взят из storage: первая загрузка сверится с ним на первом тике.
+        self._resumed: set[str] = set()
         self._events_dirty = False
+        # Что последний раз записано в storage: пишем, только если место сдвинулось.
+        self._saved: dict[str, Any] | None = None
 
     async def _warm_up(self) -> None:
-        """Запоминает текущее состояние чатов и страниц: события до запуска хендлерам не отдаются."""
+        """
+        Запоминает текущее состояние чатов и страниц.
+
+        Если в storage есть место, на котором раннер остановился (прошлый запуск или
+        прогрев после ошибки), он продолжает с него: сообщения и заказы, пришедшие за
+        это время, доходят до хендлеров. Иначе события до запуска хендлерам не отдаются.
+        """
+        positions = await self._load_positions()
         self._tags = {"orders_counters": _new_tag(), "chat_bookmarks": _new_tag()}
         self._pending.clear()
         self._attempts.clear()
         self._ready.clear()
-        self.runner._chat._chat_last_ids.clear()
+        self._resumed.clear()
+        last_ids = self.runner._chat._chat_last_ids
+        last_ids.clear()
+        if positions is not None:
+            last_ids.update(positions.chats)
+            self._resume_statuses(positions.statuses)
         # Страницы загружаются раньше /runner/: заказ, пришедший между запросами,
-        # не попадёт в кеш, и повторная сверка на первом тике его найдёт.
-        await self._sync_sources()
+        # не попадёт в кеш, и повторная сверка на первом тике его найдёт. Страница
+        # со статусами из storage сверится с ними на первом тике.
+        await self._sync_sources(skip=self._resumed)
         _, chats = await self._poll()
         if chats is None:
             raise fpx_err.FpxGetUpdatesError("FunPay не вернул список чатов (chat_bookmarks)")
-        for chat in chats:
-            self.runner._chat._chat_last_ids[chat.id] = str(chat.node_msg_id)
-        self._watermark = max((chat.node_msg_id for chat in chats), default=0)
-        self._events_dirty = bool(self._ready)
+        if positions is None:
+            for chat in chats:
+                last_ids[chat.id] = str(chat.node_msg_id)
+            self._watermark = max((chat.node_msg_id for chat in chats), default=0)
+        else:
+            # Всё, что новее места остановки, догрузится на первом тике.
+            self._watermark = positions.watermark
+            self._collect_changed(chats)
+        self._events_dirty = bool(self._ready or self._resumed)
+        await self._save_positions()
+
+    def _resume_statuses(self, statuses: dict[str, dict[str, str]]) -> None:
+        """
+        Кладёт в кеш сохранённые статусы заказов и покупок.
+
+        Первая загрузка страницы тогда не просто заполнит кеш, а сверится с ними:
+        заказ, оплаченный или закрытый, пока раннер не работал, придёт в хендлеры.
+        """
+        sources = self._sources()
+        for source, cache_key in _STATUS_SOURCES.items():
+            if source not in sources or source not in statuses:
+                continue
+            self.runner._cache[cache_key] = [
+                {"order_id": order_id, "status": status} for order_id, status in statuses[source].items()
+            ]
+            self._resumed.add(source)
+
+    async def _load_positions(self) -> "_Positions | None":
+        storage = self.runner.storage
+        if storage is None:
+            return None
+        data = await storage.get_data(POSITIONS_KEY)
+        if not data:
+            return None
+        positions = _Positions.load(data)
+        if positions is None:
+            logger.warning("Сохранённое место раннера не читается, начинаю с текущего состояния")
+        return positions
+
+    async def _save_positions(self) -> None:
+        """Записывает место раннера в storage, если оно сдвинулось."""
+        storage = self.runner.storage
+        if storage is None:
+            return
+        statuses = {
+            source: {str(order["order_id"]): str(order["status"]) for order in self.runner._cache[cache_key]}
+            for source, cache_key in _STATUS_SOURCES.items()
+            if source in self._ready or source in self._resumed
+        }
+        positions = _Positions(
+            chats={str(chat): str(last) for chat, last in self.runner._chat._chat_last_ids.items()},
+            watermark=self._watermark,
+            statuses=statuses,
+        ).dump()
+        if positions == self._saved:
+            return
+        await storage.update_data(POSITIONS_KEY, **positions)
+        self._saved = positions
 
     async def _check_updates(self) -> None:
         """Один тик: обновления, истории изменившихся чатов, сверка страниц по сигналу, хендлеры."""
@@ -102,6 +205,9 @@ class UpdatesRunner:
         # Заказы раньше сообщений: если хендлер заказа выставит состояние FSM,
         # сообщение, пришедшее вместе с оплатой, обработается уже в нём.
         await asyncio.gather(*(self._dispatch_chat(item) for item in loaded))
+        # Место записывается после хендлеров: упав между ними, раннер отдаст событие ещё раз,
+        # но не потеряет его.
+        await self._save_positions()
         if error is not None:
             raise error
 
@@ -257,8 +363,9 @@ class UpdatesRunner:
             sources.append("reviews")
         return sources
 
-    async def _sync_sources(self) -> None:
-        results = await asyncio.gather(*(self._sync(source) for source in self._sources()), return_exceptions=True)
+    async def _sync_sources(self, skip: set[str] | frozenset[str] = frozenset()) -> None:
+        sources = [source for source in self._sources() if source not in skip]
+        results = await asyncio.gather(*(self._sync(source) for source in sources), return_exceptions=True)
         errors = [result for result in results if isinstance(result, Exception)]
         for error in errors[1:]:
             await self.runner._handle_error(None, error)
@@ -269,9 +376,10 @@ class UpdatesRunner:
         """Сверяет страницу с кешем и отдаёт изменения хендлерам. Первая загрузка только заполняет кеш."""
         await self._source_step(source)
         self._ready.add(source)
+        self._resumed.discard(source)
 
     def _source_step(self, source: str) -> Awaitable[None]:
-        ready = source in self._ready
+        ready = source in self._ready or source in self._resumed
         if source == "orders":
             order = self.runner._order
             return order._check_order_page() if ready else order._update_order_page_cache()

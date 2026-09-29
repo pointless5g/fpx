@@ -357,3 +357,32 @@ def cache_row(**overrides):
     }
     row.update(overrides)
     return row
+
+
+class TestUnreadPurchases:
+    @pytest.mark.asyncio
+    async def test_a_purchase_that_did_not_load_is_checked_again(self, purchase_runner, runner):
+        runner._cache["purchases"] = [cached("P1", "Оплачен")]
+        runner._account._client.get_my_purchases = AsyncMock(return_value="<html>")
+        runner._account._parser.parse_my_sells = MagicMock(
+            return_value={"sells": [make_row("P1", "Закрыт"), make_row("P0", "Оплачен")]}
+        )
+
+        async def details(order_id):
+            if order_id == "P0":
+                raise fpx_err.FpxRequestError("429")
+            return MagicMock(description="описание", chat_id="chat-1")
+
+        runner._account.order.get_order_details = AsyncMock(side_effect=details)
+        with pytest.raises(fpx_err.FpxGetPurchaseInfoError):
+            await purchase_runner._check_purchase_page()
+        # P0 уйдёт из кеша и на следующей сверке снова окажется новой; P1 дочитана.
+        assert [row["order_id"] for row in runner._cache["purchases"]] == ["P1"]
+
+    @pytest.mark.asyncio
+    async def test_a_failing_handler_is_not_a_reason_to_read_again(self, purchase_runner, runner):
+        runner._account.order.get_order_details = AsyncMock(
+            return_value=MagicMock(description="описание", chat_id="chat-1")
+        )
+        purchase_runner._trigger_order_handlers = AsyncMock(side_effect=RuntimeError("handler"))
+        assert await purchase_runner._process_single_purchase(Purchase(order_id="1", status="Оплачен")) is True

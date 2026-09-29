@@ -426,3 +426,23 @@ def cache_row(**overrides):
     }
     row.update(overrides)
     return row
+
+
+class TestUnreadOrders:
+    @pytest.mark.asyncio
+    async def test_an_order_that_did_not_load_is_checked_again(self, order_runner, runner):
+        runner._cache["orders"] = [cached("A1", "Оплачен")]
+        runner._account._client.get_my_sells = AsyncMock(return_value="<html>")
+        runner._account._parser.parse_my_sells = MagicMock(
+            return_value={"sells": [make_sell("A2", "Оплачен"), make_sell("A1", "Закрыт")]}
+        )
+
+        async def details(order_id):
+            if order_id == "A2":
+                raise fpx_err.FpxRequestError("429")
+            return MagicMock(description="описание", chat_id="chat-1")
+
+        runner._account.order.get_order_details = AsyncMock(side_effect=details)
+        with pytest.raises(fpx_err.FpxGetOrderInfoError):
+            await order_runner._check_order_page()
+        assert [row["order_id"] for row in runner._cache["orders"]] == ["A1"]

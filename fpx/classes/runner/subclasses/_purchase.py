@@ -81,7 +81,16 @@ class PurchaseRunner:
         await self._update_purchase_page_cache()
         orders = self._compare_purchase_statuses()
         if orders:
-            await asyncio.gather(*(self._process_single_purchase(order) for order in orders))
+            results = await asyncio.gather(*(self._process_single_purchase(order) for order in orders))
+            self._retry_unread([order for order, read in zip(orders, results) if not read])
+
+    def _retry_unread(self, orders: list[Purchase]) -> None:
+        """Покупки, которые не удалось дочитать, сверятся снова на следующем тике."""
+        if not orders:
+            return
+        unread = {str(order.order_id) for order in orders}
+        self.runner._cache["purchases"] = [o for o in self.runner._cache["purchases"] if o["order_id"] not in unread]
+        raise fpx_err.FpxGetPurchaseInfoError(f"Не удалось загрузить покупки {', '.join(sorted(unread))}, повторю")
 
     def _compare_purchase_cache(self) -> list[Purchase]:
         """
@@ -133,9 +142,20 @@ class PurchaseRunner:
                 if await self._check_handler(handler, order, state_ctx):
                     pass
 
-    async def _process_single_purchase(self, order: Purchase) -> None:
+    async def _process_single_purchase(self, order: Purchase) -> bool:
+        """
+        Дочитывает заказ и отдаёт его хендлерам.
+
+        Returns:
+            bool: False, если заказ не удалось дочитать и хендлеры его не видели.
+        """
         try:
             order_info = await self.runner._account.order.get_order_details(order.order_id)
+        except Exception as e:
+            logger.debug(f"Не удалось загрузить заказ {order.order_id}: {e}", exc_info=True)
+            await self.runner._handle_error(event=order, exception=e)
+            return False
+        try:
             order.description = order_info.description
             order.chat_id = order_info.chat_id
             order._client = self.runner
@@ -143,6 +163,7 @@ class PurchaseRunner:
         except Exception as e:
             logger.debug(f"В процессе обработки заказа произошла ошибка: {e}. Убедитесь что всё хорошо", exc_info=True)
             await self.runner._handle_error(event=order, exception=e)
+        return True
 
     async def _check_purchases(self) -> None:
         await self._update_purchase_cache()

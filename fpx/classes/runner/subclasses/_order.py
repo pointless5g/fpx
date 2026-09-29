@@ -78,7 +78,22 @@ class OrderRunner:
         await self._update_order_page_cache()
         orders = self._compare_order_statuses()
         if orders:
-            await asyncio.gather(*(self._process_single_order(order) for order in orders))
+            results = await asyncio.gather(*(self._process_single_order(order) for order in orders))
+            self._retry_unread([order for order, read in zip(orders, results) if not read])
+
+    def _retry_unread(self, orders: list[Order]) -> None:
+        """
+        Заказы, которые не удалось дочитать, сверятся снова на следующем тике.
+
+        Их статус убирается из кеша, и следующая загрузка страницы увидит их как
+        изменившиеся. Ошибка заставляет раннер повторить сверку, не дожидаясь нового
+        сигнала FunPay.
+        """
+        if not orders:
+            return
+        unread = {str(order.order_id) for order in orders}
+        self.runner._cache["orders"] = [o for o in self.runner._cache["orders"] if o["order_id"] not in unread]
+        raise fpx_err.FpxGetOrderInfoError(f"Не удалось загрузить заказы {', '.join(sorted(unread))}, повторю")
 
     def _compare_order_cache(self) -> list[Order]:
         """
@@ -152,9 +167,20 @@ class OrderRunner:
                 if await self._check_handler(handler, order, state_ctx):
                     pass
 
-    async def _process_single_order(self, order: Order) -> None:
+    async def _process_single_order(self, order: Order) -> bool:
+        """
+        Дочитывает заказ и отдаёт его хендлерам.
+
+        Returns:
+            bool: False, если заказ не удалось дочитать и хендлеры его не видели.
+        """
         try:
             order_info = await self.runner._account.order.get_order_details(order.order_id)
+        except Exception as e:
+            logger.debug(f"Не удалось загрузить заказ {order.order_id}: {e}", exc_info=True)
+            await self.runner._handle_error(event=order, exception=e)
+            return False
+        try:
             order.description = order_info.description
             order.chat_id = order_info.chat_id
             order._client = self.runner
@@ -162,6 +188,7 @@ class OrderRunner:
         except Exception as e:
             logger.debug(f"В процессе обработки заказа произошла ошибка: {e}. Убедитесь что всё хорошо", exc_info=True)
             await self.runner._handle_error(event=order, exception=e)
+        return True
 
     async def _check_orders(self) -> None:
         await self._update_order_cache()

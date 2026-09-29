@@ -13,6 +13,8 @@ FpxError
 │   ├── FpxGetChatsError
 │   ├── FpxGetUpdatesError
 │   ├── FpxMessageDeliverError
+│   │   ├── FpxMessageRefusedError
+│   │   └── FpxMessageOutcomeUnknownError
 │   ├── FpxRaisingLotError
 │   ├── FpxRefundError
 │   ├── FpxRequestError
@@ -63,6 +65,9 @@ FpxError
 | `FpxGetChatsError` | Не удалось запросить список чатов |
 | `FpxGetUpdatesError` | Не удалось получить обновления через `/runner/` (ответ не пришёл или не разобрался) |
 | `FpxMessageDeliverError` | Сообщение не отправилось |
+| `FpxMessageRefusedError` | FunPay отказал в отправке; `error_message` — его текст, `is_flood` — слишком часто |
+| `FpxMessageOutcomeUnknownError` | Неизвестно, ушло ли сообщение: ответ не получен |
+| `FpxImageUploadError` | FunPay не принял картинку |
 | `FpxRaisingLotError` | Не удалось поднять лоты (нет лотов или ошибка) |
 | `FpxRefundError` | Возврат не прошёл |
 | `FpxRequestError` | Сеть упала, сервер не ответил, превышены попытки |

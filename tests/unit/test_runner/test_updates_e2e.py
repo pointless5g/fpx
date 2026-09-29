@@ -54,6 +54,9 @@ class FakeFunPay:
         # Сколько раз подряд страница заказа ответит 429.
         self.rate_limited_orders: dict[str, int] = {}
 
+        # Отказы на следующие отправки сообщений, по порядку.
+        self.refusals: list[str] = []
+
     # -- что происходит на FunPay
     def say(self, text: str, author: int = BUYER_ID, node: int = NODE) -> None:
         self.chats[node]["messages"].append((self.next_id, author, text))
@@ -172,8 +175,11 @@ class FakeFunPay:
         request = form.get("request", ["false"])[0]
         if request != "false":
             data = json.loads(request)["data"]
-            self.say(data["content"], author=SHOP_ID, node=self.node_by_name(data["node"]))
-            response = {"error": None}
+            if self.refusals:
+                response = {"error": self.refusals.pop(0)}
+            else:
+                self.say(data["content"], author=SHOP_ID, node=self.node_by_name(data["node"]))
+                response = {"error": None}
         result = []
         for obj in objects:
             if obj["type"] == "orders_counters":
@@ -181,7 +187,9 @@ class FakeFunPay:
             elif obj["type"] == "chat_bookmarks":
                 data, tag = self.bookmarks()
             elif obj["type"] == "chat_node":
-                data, tag = self.chat_node(int(obj["data"]["node"]), int(obj["data"]["last_message"]))
+                node = obj["data"]["node"]
+                node = self.node_by_name(node) if str(node).startswith("users-") else int(node)
+                data, tag = self.chat_node(node, int(obj["data"]["last_message"]))
             else:
                 continue
             if tag != obj["tag"]:
@@ -774,3 +782,26 @@ def test_a_message_carries_its_chat_and_author(site: FakeFunPay) -> None:
     assert (notice.type, notice.order_id, notice.author_id) == (types.MessageType.ORDER_PURCHASED, "PAID0002", 0)
     assert (line.author_id, line.chat_name, line.interlocutor_id) == (BUYER_ID, f"users-{SHOP_ID}-{BUYER_ID}", BUYER_ID)
     assert str(line.chat_id) == str(NODE)
+
+
+def test_a_sent_message_comes_back_with_its_id_and_is_marked_as_the_bots(site: FakeFunPay) -> None:
+    fp = make_tools(site)
+    own: list[tuple[int, bool, str]] = []
+
+    @fp.router.on_message(own=True)
+    async def on_own(message: types.Message) -> None:
+        own.append((message.node_msg_id, message.by_bot, message.text))
+
+    async def scenario() -> None:
+        await tick(fp)
+        sent = await fp.account.chat.send(f"users-{SHOP_ID}-{BUYER_ID}", "Готово!", mark_bot=True)
+        assert sent.id == site.next_id - 1
+        site.refusals.append("Нельзя отправлять сообщения слишком часто.")
+        with pytest.raises(fpx_err.FpxMessageRefusedError) as refused:
+            await fp.account.chat.send(f"users-{SHOP_ID}-{BUYER_ID}", "Ещё раз", mark_bot=True)
+        assert refused.value.is_flood
+        await tick(fp)
+
+    run(fp, scenario)
+    # Эхо своего сообщения приходит хендлеру own=True с меткой бота, текст без метки.
+    assert own == [(site.next_id - 1, True, "Готово!")]

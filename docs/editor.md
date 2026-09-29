@@ -51,6 +51,8 @@ await fp.account.editor.toggle_on_lot("12345678")
 
 Обе функции возвращают `True` при успехе. При ошибке — `FpxRequestError`.
 
+Если FunPay отвечает на сохранение статусом 200, но с ошибкой в JSON (`error`/`errors`), все методы редактора кидают `FpxLotSaveError` (подкласс `FpxLotEditingError`): ошибки по полям лежат в `e.errors`, общий текст — в `e.error_message`. Чтобы поменять несколько полей одним сохранением, используй `fp.account.lot.get_lot_fields()` и `fp.account.lot.save_lot()` (см. «Лоты и поднятие»).
+
 ---
 
 ## Альтернативный доступ через `fpx.services`

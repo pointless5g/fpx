@@ -21,6 +21,7 @@ FpxError
 │   ├── FpxRequestError
 │   │   └── FpxRequestOutcomeUnknownError
 │   ├── FpxLotEditingError
+│   │   └── FpxLotSaveError
 │   ├── FpxAnswerReviewError
 │   ├── FpxDeleteReviewError
 │   ├── FpxClientNotAttachedError
@@ -29,7 +30,9 @@ FpxError
 │   ├── FpxGetChatDataError
 │   ├── FpxBanChatError
 │   ├── FpxGetLotEditorInfoError
+│   │   └── FpxLotNotFoundError
 │   ├── FpxGetLotInfoError
+│   ├── FpxGetMyLotsError
 │   ├── FpxGetOrderInfoError
 │   ├── FpxGetUserDataError
 │   ├── FpxGetUserSellsError
@@ -75,6 +78,7 @@ FpxError
 | `FpxRequestError` | Сеть упала, сервер не ответил, превышены попытки |
 | `FpxRequestOutcomeUnknownError` | POST мог выполниться: сервер ответил 502/503/504, ответ не пришёл или соединение оборвалось. Сам не повторяется, чтобы не отправить сообщение дважды |
 | `FpxLotEditingError` | Цена не поменялась после редактирования |
+| `FpxLotSaveError` | FunPay отклонил сохранение лота (`error`/`errors` в ответе); ошибки полей в `.errors` |
 | `FpxAnswerReviewError` | Ответ на отзыв не сохранился |
 | `FpxDeleteReviewError` | Отзыв или ответ на отзыв не удалось удалить |
 | `FpxClientNotAttachedError` | Попытка вызвать `.answer()` у объекта без привязки к клиенту |
@@ -83,7 +87,9 @@ FpxError
 | `FpxGetChatDataError` | Не удалось получить технические данные чата |
 | `FpxBanChatError` | Не удалось заблокировать чат |
 | `FpxGetLotEditorInfoError` | Не удалось получить данные формы редактора лота |
+| `FpxLotNotFoundError` | FunPay вместо редактора отдал страницу ошибки: лот удалён или чужой |
 | `FpxGetLotInfoError` | Не удалось получить информацию о лоте |
+| `FpxGetMyLotsError` | Не удалось получить таблицу своих лотов подкатегории |
 | `FpxGetOrderInfoError` | Не удалось получить информацию о заказе |
 | `FpxGetUserDataError` | Не удалось получить данные юзера (csrf_token, user_id) |
 | `FpxGetUserSellsError` | Не удалось получить список продаж |

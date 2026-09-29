@@ -192,6 +192,29 @@
 | `location` | `str` | Локация |
 | `deleted` | `str` | Флаг удаления |
 | `fields` | `dict` | Все поля лота |
+| `currency` | `str` | Валюта лота: `"RUB"`, `"USD"`, `"EUR"`, `""` (заполняет `get_lot_fields`) |
+| `stored_amount` | `int \| None` | Наличие, сохранённое на FunPay (заполняет `get_lot_fields`) |
+
+Свойства поверх `fields`: `price`, `amount`, `active`, `active_checkbox`, `auto_delivery`, `secrets`, `title_ru`, `title_en`, `description_ru`, `description_en`, `payment_msg_ru`, `payment_msg_en`, `images`, `deactivate_after_sale`, `subcategory_id`. Подробнее — в «Лоты и поднятие».
+
+---
+
+## MyLotRow
+
+Строка таблицы своих лотов подкатегории (`get_my_subcategory_lots`).
+
+| Поле | Тип | Описание |
+|------|-----|----------|
+| `offer_id` | `str` | ID лота |
+| `node_id` | `str` | ID подкатегории |
+| `description` | `str \| None` | Описание из таблицы |
+| `server` | `str \| None` | Сервер |
+| `side` | `str \| None` | Сторона |
+| `amount` | `int \| None` | Наличие |
+| `price` | `float` | Цена |
+| `currency` | `str` | `"RUB"`, `"USD"`, `"EUR"` или `""` |
+| `auto_delivery` | `bool` | Включена автовыдача FunPay |
+| `active` | `bool` | Лот активен (строка без класса `warning`) |
 
 ---
 

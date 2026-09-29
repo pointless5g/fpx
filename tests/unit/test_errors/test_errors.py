@@ -71,3 +71,22 @@ class TestErrors:
         err = fpx_err.FpxDeleteReviewError()
         assert isinstance(err, fpx_err.FpxAccountError)
         assert str(err)
+
+    def test_lot_not_found_is_lot_editor_info_error(self):
+        err = fpx_err.FpxLotNotFoundError(lot_id="1", error_message="Лот не найден")
+        assert isinstance(err, fpx_err.FpxGetLotEditorInfoError)
+        assert isinstance(err, fpx_err.FpxAccountError)
+        assert (err.lot_id, err.error_message) == ("1", "Лот не найден")
+        assert str(err)
+
+    def test_lot_save_error_is_lot_editing_error(self):
+        err = fpx_err.FpxLotSaveError(lot_id="1", errors={"price": "Слишком низкая"})
+        assert isinstance(err, fpx_err.FpxLotEditingError)
+        assert err.errors == {"price": "Слишком низкая"}
+        assert err.error_message is None
+        assert fpx_err.FpxLotSaveError().errors == {}
+
+    def test_get_my_lots_error_is_account_error(self):
+        err = fpx_err.FpxGetMyLotsError()
+        assert isinstance(err, fpx_err.FpxAccountError)
+        assert str(err)

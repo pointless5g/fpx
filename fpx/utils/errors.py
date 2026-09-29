@@ -231,10 +231,64 @@ class FpxGetLotEditorInfoError(FpxAccountError):
         super().__init__(message)
 
 
+class FpxLotNotFoundError(FpxGetLotEditorInfoError):
+    """
+    FunPay вместо формы редактора отдал страницу ошибки (``p.lead``):
+    лот удалён, не существует или принадлежит другому продавцу.
+
+    Attributes:
+        lot_id (str | None): ID лота, если он известен.
+        error_message (str | None): текст ошибки со страницы FunPay.
+    """
+
+    def __init__(
+        self,
+        message: str = "FunPay не открыл редактор лота",
+        *,
+        lot_id: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        self.lot_id = lot_id
+        self.error_message = error_message
+        super().__init__(message)
+
+
 class FpxGetLotInfoError(FpxAccountError):
     """Ошибка запроса данных лота"""
 
     def __init__(self, message: str = "Ошибка запроса данных лота") -> None:
+        super().__init__(message)
+
+
+class FpxGetMyLotsError(FpxAccountError):
+    """Ошибка запроса таблицы своих лотов подкатегории (/lots/<node>/trade)"""
+
+    def __init__(self, message: str = "Ошибка запроса таблицы своих лотов подкатегории") -> None:
+        super().__init__(message)
+
+
+class FpxLotSaveError(FpxLotEditingError):
+    """
+    FunPay отклонил сохранение лота: в JSON-ответе на ``POST /lots/offerSave``
+    есть ``error`` или ``errors``.
+
+    Attributes:
+        lot_id (str | None): ID лота.
+        error_message (str | None): общий текст ошибки из ответа FunPay.
+        errors (dict[str, str]): ошибки по полям формы, ``{имя поля: текст}``.
+    """
+
+    def __init__(
+        self,
+        message: str = "FunPay отклонил сохранение лота",
+        *,
+        lot_id: str | None = None,
+        error_message: str | None = None,
+        errors: dict[str, str] | None = None,
+    ) -> None:
+        self.lot_id = lot_id
+        self.error_message = error_message
+        self.errors: dict[str, str] = dict(errors or {})
         super().__init__(message)
 
 

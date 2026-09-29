@@ -55,6 +55,7 @@ class Router:
             # системные
             "startup": [],
             "flood": [],
+            "orders_counters": [],
         }
         self._middlewares: list[Middleware] = []
 
@@ -395,6 +396,21 @@ class Router:
 
         def decorator(func: HandlerFunc) -> HandlerFunc:
             self._handlers["startup"].append(func)
+            return func
+
+        return decorator
+
+    def on_orders_counters(self) -> Decorator:
+        """
+        Декоратор отслеживает смену счётчиков незавершённых заказов (приём событий через /runner/).
+
+        Счётчики приходят в том же запросе, что и список чатов, поэтому хендлер ничего не стоит.
+        Смена счётчиков - сигнал, что на страницах продаж или покупок что-то изменилось: например,
+        чтобы сверять заказы своим кодом. Хендлер получает OrdersCounters(buyer, seller).
+        """
+
+        def decorator(func: HandlerFunc) -> HandlerFunc:
+            self._handlers["orders_counters"].append(func)
             return func
 
         return decorator

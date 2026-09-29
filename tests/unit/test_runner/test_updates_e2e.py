@@ -805,3 +805,25 @@ def test_a_sent_message_comes_back_with_its_id_and_is_marked_as_the_bots(site: F
     run(fp, scenario)
     # Эхо своего сообщения приходит хендлеру own=True с меткой бота, текст без метки.
     assert own == [(site.next_id - 1, True, "Готово!")]
+
+
+def test_changed_order_counters_reach_their_handler_without_loading_pages(site: FakeFunPay) -> None:
+    fp = make_tools(site)
+    seen: list[tuple[int, int]] = []
+
+    @fp.router.on_orders_counters()
+    async def on_counters(counters: types.OrdersCounters) -> None:
+        seen.append((counters.buyer, counters.seller))
+
+    async def scenario() -> None:
+        await tick(fp)
+        await tick(fp)
+        site.requests.clear()
+        site.add_order("QUIET1")
+        await tick(fp)
+        await tick(fp)
+
+    run(fp, scenario)
+    assert seen == [(0, 1)]
+    # Хендлеров заказов нет: страница продаж не загружалась.
+    assert site.requests == ["POST /runner/", "POST /runner/"]

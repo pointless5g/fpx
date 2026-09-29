@@ -4,6 +4,7 @@ import secrets
 from dataclasses import dataclass, field
 from typing import Any, Awaitable
 
+from fpx.models.account import OrdersCounters
 from fpx.models.chat import Chat, Message
 from fpx.utils import errors as fpx_err
 
@@ -30,6 +31,16 @@ def _interlocutor(node_name: str | None, my_id: Any) -> int | None:
     ids = [int(part) for part in (node_name or "").split("-")[1:] if part.isdigit()]
     others = [user_id for user_id in ids if str(user_id) != str(my_id)]
     return others[0] if len(others) == 1 else None
+
+
+def _counters(data: Any) -> OrdersCounters | None:
+    """Счётчики из данных объекта orders_counters: {"buyer": N, "seller": M}."""
+    if not isinstance(data, dict):
+        return None
+    try:
+        return OrdersCounters(buyer=int(data.get("buyer") or 0), seller=int(data.get("seller") or 0))
+    except (TypeError, ValueError):
+        return None
 
 
 def _new_tag() -> str:
@@ -106,6 +117,8 @@ class UpdatesRunner:
         self._events_dirty = False
         # Что последний раз записано в storage: пишем, только если место сдвинулось.
         self._saved: dict[str, Any] | None = None
+        # Последние счётчики незавершённых заказов из orders_counters.
+        self.counters: OrdersCounters | None = None
 
     async def _warm_up(self) -> None:
         """
@@ -197,6 +210,7 @@ class UpdatesRunner:
         counters_changed, chats = await self._poll()
         if counters_changed:
             self._events_dirty = True
+            await self._dispatch_counters()
         if chats:
             self._collect_changed(chats)
         loaded = await self._load_pending()
@@ -230,6 +244,16 @@ class UpdatesRunner:
             raise fpx_err.FpxGetUpdatesError(f"Запрос к /runner/ не удался: {e}") from e
         return [obj for obj in received if isinstance(obj, dict)]
 
+    async def _dispatch_counters(self) -> None:
+        if self.counters is None:
+            return
+        for handler in self.runner.router._handlers["orders_counters"]:
+            try:
+                await self.runner.router.invoke(handler, self.counters)
+            except Exception as e:
+                logger.debug(f"Ошибка в хендлере счётчиков заказов: {e}", exc_info=True)
+                await self.runner._handle_error(event=self.counters, exception=e)
+
     def _base_object(self, obj_type: str) -> dict[str, Any]:
         user_id = int(self.runner._account.data.user_id)
         return {"type": obj_type, "id": user_id, "tag": self._tags[obj_type], "data": False}
@@ -251,6 +275,7 @@ class UpdatesRunner:
             tag = str(obj.get("tag") or "")
             if obj_type == "orders_counters":
                 counters_changed = tag != self._tags[obj_type]
+                self.counters = _counters(obj.get("data")) or self.counters
             else:
                 data = obj.get("data")
                 if isinstance(data, dict) and "html" in data:

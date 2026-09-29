@@ -3,16 +3,35 @@ from __future__ import annotations
 import json
 import logging
 import re
+import unicodedata
 from typing import Any
 
 from bs4 import BeautifulSoup, Tag
 
 from fpx.models.chat import Chat
 from fpx.utils import errors as fpx_err
+from fpx.utils.message_types import MessageType, classify_notice
 
 from ._base import BaseParser
 
 logger = logging.getLogger("fpx.chat_parser")
+
+# Метка бота в начале текста (FunPay Cardinal и fpx при отправке с mark_bot=True).
+_BOT_MARK = "\u2061"
+# Прежняя метка: считается ботом только в собственных сообщениях.
+_OLD_BOT_MARK = "\u2064"
+# Зелёная метка сотрудника FunPay в шапке сообщения; серая - «автоответ».
+_STAFF_LABEL = "chat-msg-author-label label label-success"
+_DEFAULT_LABEL = "chat-msg-author-label label label-default"
+_AUTOREPLY_LABELS = frozenset({"автоответ", "автовідповідь", "auto-reply"})
+
+
+def _strip_invisible_suffix(text: str) -> str:
+    """Убирает с конца пробелы и невидимые символы (категория Cf), которые FunPay дописывает к тексту."""
+    end = len(text)
+    while end > 0 and (text[end - 1].isspace() or unicodedata.category(text[end - 1]) == "Cf"):
+        end -= 1
+    return text[:end]
 
 
 class ChatParser(BaseParser):
@@ -91,36 +110,117 @@ class ChatParser(BaseParser):
         return chats
 
     @classmethod
-    def parse_runner_messages(cls, messages: list[dict[str, Any]], names: dict[int, str]) -> list[dict[str, Any]]:
+    def parse_runner_messages(
+        cls, messages: list[dict[str, Any]], names: dict[int, str], my_id: int | None = None
+    ) -> list[dict[str, Any]]:
         """
         Парсит сообщения объекта chat_node ответа /runner/.
 
         FunPay отдаёт у сообщения ID, ID автора и HTML в разметке страницы чата.
-        Автор 0 - оповещение FunPay. Ник автора в HTML есть только у первого
-        сообщения серии, поэтому известные ники передаются в names ({ID автора: ник}).
+        Автор 0 - оповещение FunPay. Ник и метка автора в HTML есть только у первого
+        сообщения серии, поэтому известные ники передаются в names ({ID автора: ник}),
+        а метка берётся из первой шапки автора в пачке.
+
+        Кроме прежних ключей (node_id, author_id, sender, message, is_system) у сообщения есть:
+        is_own (автор - my_id), by_bot (метка бота U+2061 снята с текста), image_link и
+        image_name (картинка), badge, is_employee и is_autoreply (метки автора), type и
+        order_id (тип оповещения FunPay и номер заказа), html (исходная разметка).
         """
         names = dict(names)
-        result: list[dict[str, Any]] = []
+        parsed: list[tuple[int, int, str, BeautifulSoup]] = []
+        badges: dict[int, str | None] = {}
         for raw in messages:
             try:
                 node_id = int(raw["id"])
                 author_id = int(raw.get("author") or 0)
-                item = BeautifulSoup(raw.get("html") or "", "html.parser")
-                author_link = item.find("a", class_="chat-msg-author-link")
-                if author_id and author_link:
-                    names[author_id] = author_link.get_text(strip=True)
-                result.append(
-                    {
-                        "node_id": node_id,
-                        "author_id": author_id,
-                        "sender": "FunPay" if author_id == 0 else names.get(author_id, "Unknown"),
-                        "message": cls._message_text(item),
-                        "is_system": author_id == 0,
-                    }
-                )
+                html = str(raw.get("html") or "")
+                item = BeautifulSoup(html.replace("<br>", "\n"), "html.parser")
             except Exception as e:
                 logger.debug(f"Не удалось распарсить сообщение из chat_node: {e}")
+                continue
+            head = item.find("div", class_="media-user-name")
+            if author_id and isinstance(head, Tag):
+                author_link = head.find("a", class_="chat-msg-author-link")
+                if author_link:
+                    names[author_id] = author_link.get_text(strip=True)
+                if author_id not in badges:
+                    staff = head.find("span", attrs={"class": _STAFF_LABEL})
+                    badges[author_id] = staff.get_text(strip=True) if staff else None
+            elif author_id:
+                author_link = item.find("a", class_="chat-msg-author-link")
+                if author_link:
+                    names[author_id] = author_link.get_text(strip=True)
+            parsed.append((node_id, author_id, html, item))
+
+        result: list[dict[str, Any]] = []
+        for node_id, author_id, html, item in parsed:
+            try:
+                result.append(cls._runner_message(node_id, author_id, html, item, names, badges, my_id))
+            except Exception as e:
+                logger.debug(f"Не удалось распарсить сообщение {node_id} из chat_node: {e}")
         return result
+
+    @classmethod
+    def _runner_message(
+        cls,
+        node_id: int,
+        author_id: int,
+        html: str,
+        item: BeautifulSoup,
+        names: dict[int, str],
+        badges: dict[int, str | None],
+        my_id: int | None,
+    ) -> dict[str, Any]:
+        is_system = author_id == 0
+        image_link: str | None = None
+        image_name: str | None = None
+        by_bot = False
+        image = item.find("a", class_="chat-img-link")
+        if not is_system and isinstance(image, Tag):
+            image_link = cls._get_str_attr(image, "href") or None
+            img = image.find("img")
+            image_name = cls._get_str_attr(img, "alt") or None if isinstance(img, Tag) else None
+            # Картинки бота FunPay Cardinal: «Отправлено_с_помощью_бота_FunPay_Cardinal.png».
+            by_bot = bool(image_name and "funpay_cardinal" in image_name.lower())
+            text = image_link or ""
+        else:
+            block = item.find("div", attrs={"role": "alert"}) if is_system else None
+            if not isinstance(block, Tag):
+                block = item.find("div", class_="chat-msg-text")
+            text = _strip_invisible_suffix(block.get_text() if isinstance(block, Tag) else "")
+            if is_system:
+                text = text.strip()
+            if text.startswith(_BOT_MARK) or (
+                text.startswith(_OLD_BOT_MARK) and my_id is not None and author_id == my_id
+            ):
+                text = text[1:]
+                by_bot = True
+        message_type, order_id = classify_notice(text) if is_system else (MessageType.NON_SYSTEM, None)
+        badge = badges.get(author_id)
+        is_autoreply = False
+        head = item.find("div", class_="media-user-name")
+        default_label = head.find("span", attrs={"class": _DEFAULT_LABEL}) if isinstance(head, Tag) else None
+        if default_label is not None:
+            label = default_label.get_text(strip=True)
+            is_autoreply = label.lower() in _AUTOREPLY_LABELS
+            badge = badge or label
+        return {
+            "node_id": node_id,
+            "author_id": author_id,
+            "sender": "FunPay" if is_system else names.get(author_id, "Unknown"),
+            "message": text,
+            "is_system": is_system,
+            "is_own": my_id is not None and author_id == my_id,
+            "by_bot": by_bot,
+            "image_link": image_link,
+            "image_name": image_name,
+            "badge": badge,
+            "is_employee": badges.get(author_id) is not None,
+            "is_autoreply": is_autoreply,
+            "type": message_type,
+            "order_id": order_id,
+            "html": html,
+        }
 
     @classmethod
     def parse_chat(cls, html_content: str) -> dict[str, Any]:

@@ -3,6 +3,7 @@ from typing import Any, List, cast
 
 from fpx.utils import errors as fpx_err
 from fpx.utils.formatting import safe_format
+from fpx.utils.message_types import MessageType
 
 
 @dataclass
@@ -27,11 +28,42 @@ class Chat:
 
 @dataclass
 class Message:
+    """
+    Сообщение чата.
+
+    Поля после is_system заполняет приём событий через /runner/; у сообщений из
+    других источников они остаются по умолчанию.
+    """
+
     node_msg_id: int
     sender: str
     chat_id: str | int
     text: str
     is_system: bool
+    # ID автора на FunPay; 0 - оповещение FunPay.
+    author_id: int | None = None
+    # Имя переписки users-<ID>-<ID>: по нему отправляются сообщения и видно собеседника.
+    chat_name: str | None = None
+    # ID собеседника в личном чате (второй ID из chat_name).
+    interlocutor_id: int | None = None
+    # Сообщение написано с этого аккаунта: ботом или человеком из браузера.
+    is_own: bool = False
+    # Текст начинался с метки бота (U+2061), или картинка отправлена ботом FunPay Cardinal.
+    by_bot: bool = False
+    # Ссылка на картинку и её имя, если сообщение - картинка.
+    image_link: str | None = None
+    image_name: str | None = None
+    # Зелёная метка сотрудника FunPay («поддержка», «арбитраж», «модерация») или серая («автоответ»).
+    badge: str | None = None
+    # Автор - сотрудник FunPay (зелёная метка).
+    is_employee: bool = False
+    # Автоответ FunPay от имени продавца (серая метка «автоответ»).
+    is_autoreply: bool = False
+    # Тип оповещения FunPay и номер заказа, о котором оно (только у is_system).
+    type: MessageType = MessageType.NON_SYSTEM
+    order_id: str | None = None
+    # Разметка сообщения, как её прислал FunPay.
+    html: str | None = field(default=None, repr=False)
     _client: Any = field(init=False, repr=False, default=None)
 
     async def answer(self, answer_text: str) -> bool:

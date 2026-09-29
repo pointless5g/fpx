@@ -165,7 +165,9 @@ class ChatRunner:
     async def _trigger_message_handlers(self, message: Message) -> None:
         if self.runner._account.data.username is None:
             await self.runner._account.profile.get_user_data()
-        if self.runner._account.data.username == message.sender:
+        own = message.is_own or self.runner._account.data.username == message.sender
+        if own or message.is_system:
+            await self._trigger_side_handlers(message, "own" if own else "system")
             return
         msg_text = message.text.lower() if message.text else message.text
         current_state = await self.runner.storage.get_state(message.chat_id)
@@ -194,6 +196,25 @@ class ChatRunner:
                         break
                 if not matched:
                     continue
+            await self.runner.router.invoke(handler["function"], message, state_ctx)
+            break
+
+    async def _trigger_side_handlers(self, message: Message, kind: str) -> None:
+        """
+        Своё сообщение или оповещение FunPay: только хендлерам, которые его попросили.
+
+        Команды и автоответы (mapping) на них не срабатывают: бот не должен отвечать
+        сам себе или FunPay.
+        """
+        current_state = await self.runner.storage.get_state(message.chat_id)
+        state_ctx = FSMContext(storage=self.runner.storage, chat_id=message.chat_id)
+        for handler in self.runner.router._handlers["message"]:
+            if not handler.get(kind) or handler["mapping"] is not None:
+                continue
+            if handler["state"] != current_state:
+                continue
+            if not await self._check_filters(message, handler):
+                continue
             await self.runner.router.invoke(handler["function"], message, state_ctx)
             break
 

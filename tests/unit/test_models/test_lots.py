@@ -1,4 +1,4 @@
-"""Тесты моделей лотов: CurrentLotInfo, LotInfo, LotCreationFields."""
+"""Тесты моделей лотов: CurrentLotInfo, LotInfo, LotCreationFields, LotEditor, MyLotRow."""
 
 from unittest.mock import AsyncMock, MagicMock
 
@@ -12,6 +12,7 @@ from fpx.models.lots import (
     LotEditor,
     LotField,
     LotInfo,
+    MyLotRow,
 )
 from fpx.utils import errors as fpx_err
 
@@ -150,6 +151,145 @@ class TestLotEditorAndSimpleModels:
         lot = CategoryLastLot(category_id="1", filtration="все", price=99.0, offer_id="5", owner_username="Bob")
         assert lot.price == 99.0
         assert lot.owner_username == "Bob"
+
+
+def make_editor(fields=None, **kwargs):
+    return LotEditor(
+        csrf_token="tok",
+        form_created_at="ts",
+        offer_id="111",
+        node_id="1331",
+        location="",
+        deleted="",
+        fields=dict(fields or {}),
+        **kwargs,
+    )
+
+
+class TestLotEditorProperties:
+    def test_old_constructor_still_works_and_new_fields_default(self):
+        editor = make_editor({"price": "10"})
+        assert editor.currency == ""
+        assert editor.stored_amount is None
+        assert editor.price == 10.0
+
+    def test_titles_descriptions_and_links(self):
+        editor = make_editor(
+            {
+                "fields[summary][ru]": "40 робуксов",
+                "fields[summary][en]": "40 robux",
+                "fields[desc][ru]": "Описание",
+                "fields[payment_msg][ru]": "Спасибо",
+                "fields[images]": "101,102",
+            }
+        )
+        assert editor.title_ru == "40 робуксов"
+        assert editor.title_en == "40 robux"
+        assert editor.description_ru == "Описание"
+        assert editor.description_en == ""
+        assert editor.payment_msg_ru == "Спасибо"
+        assert editor.images == [101, 102]
+        assert editor.subcategory_id == 1331
+        assert editor.public_link == "https://funpay.com/lots/offer?id=111"
+        assert editor.private_link == "https://funpay.com/lots/offerEdit?offer=111"
+        editor.title_ru = "80 робуксов"
+        editor.images = [7]
+        assert editor.fields["fields[summary][ru]"] == "80 робуксов"
+        assert editor.fields["fields[images]"] == "7"
+
+    def test_price_get_set(self):
+        editor = make_editor({"price": "45.5"})
+        assert editor.price == 45.5
+        editor.price = 50.25
+        assert editor.fields["price"] == "50.25"
+        editor.price = None
+        assert editor.fields["price"] == ""
+        assert editor.price is None
+
+    @pytest.mark.parametrize(
+        ("fields", "stored", "expected"),
+        [
+            ({"active": "on"}, 7, True),
+            ({"active": "on"}, None, True),
+            ({"active": ""}, 7, False),
+            ({}, 7, False),
+            # FunPay оставляет чекбокс отмеченным у распроданного лота: FunPayAPI считает его неактивным.
+            ({"active": "on"}, 0, False),
+        ],
+    )
+    def test_active_folds_stored_stock(self, fields, stored, expected):
+        editor = make_editor(fields, stored_amount=stored)
+        assert editor.active is expected
+        assert editor.active_checkbox is (fields.get("active") == "on")
+
+    def test_active_setter_writes_checkbox(self):
+        editor = make_editor({"active": "on"})
+        editor.active = False
+        assert editor.fields["active"] == ""
+        editor.active = True
+        assert editor.fields["active"] == "on"
+
+    def test_auto_delivery_and_deactivate_after_sale(self):
+        assert make_editor({}).auto_delivery is None
+        assert make_editor({"auto_delivery": ""}).auto_delivery is False
+        assert make_editor({"auto_delivery": "on"}).auto_delivery is True
+        editor = make_editor({"deactivate_after_sale": ""})
+        assert editor.deactivate_after_sale is False
+        editor.deactivate_after_sale = True
+        editor.auto_delivery = False
+        assert editor.fields["deactivate_after_sale"] == "on"
+        assert editor.fields["auto_delivery"] == ""
+        editor.auto_delivery = None
+        assert "auto_delivery" not in editor.fields
+
+    def test_amount_is_secrets_count_with_auto_delivery(self):
+        editor = make_editor({"auto_delivery": "on", "secrets": "a\nb\n\nc\n", "amount": "99"})
+        assert editor.secrets == ["a", "b", "c"]
+        assert editor.amount == 3
+        editor.secrets = ["x"]
+        assert editor.fields["secrets"] == "x"
+        assert editor.amount == 1
+
+    @pytest.mark.parametrize(("raw", "expected"), [("7", 7), ("0", 0), ("", None), (" ", None), ("abc", None)])
+    def test_amount_from_field(self, raw, expected):
+        assert make_editor({"amount": raw, "auto_delivery": ""}).amount == expected
+
+    def test_amount_without_field_is_none(self):
+        assert make_editor({}).amount is None
+
+    def test_amount_setter_keeps_zero_as_zero(self):
+        """FunPayAPI отправлял 0 пустой строкой (= неограниченно); здесь 0 уходит как "0"."""
+        editor = make_editor({"amount": "5"})
+        editor.amount = 0
+        assert editor.fields["amount"] == "0"
+        editor.amount = 12
+        assert editor.fields["amount"] == "12"
+        editor.amount = None
+        assert editor.fields["amount"] == ""
+
+    def test_empty_amount_round_trips_unchanged(self):
+        editor = make_editor({"amount": ""})
+        editor.amount = editor.amount
+        assert editor.fields["amount"] == ""
+
+
+class TestMyLotRow:
+    def test_links(self):
+        row = MyLotRow(
+            offer_id="111",
+            node_id="1331",
+            description="40 робуксов",
+            server=None,
+            side=None,
+            amount=5,
+            price=45.5,
+            currency="RUB",
+            auto_delivery=False,
+            active=True,
+        )
+        assert row.public_link == "https://funpay.com/lots/offer?id=111"
+        assert row.private_link == "https://funpay.com/lots/offerEdit?offer=111"
+        assert row.html == ""
 
 
 def make_lot_creation_fields(**overrides):

@@ -2,6 +2,7 @@
 
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 from fpx._api._client import FunPayClient
@@ -254,3 +255,54 @@ class TestLotStateSurvivesEdits:
         page = FakeLotEditorPage(active=False)
         assert await editor_over(page).toggle_on_lot("42") is True
         assert page.active is True
+
+
+class JsonAnsweringLotEditorPage(FakeLotEditorPage):
+    """Редактор, который отвечает на offerSave заданным JSON со статусом 200, как FunPay."""
+
+    def __init__(self, active: bool, save_json: dict) -> None:
+        super().__init__(active)
+        self.save_json = save_json
+
+    async def execute(self, method, url, **kwargs):
+        if method == "GET":
+            return MagicMock(status_code=200, text=self.page())
+        self.saved.append(kwargs["data"])
+        if not self.save_json.get("error") and not self.save_json.get("errors"):
+            self.price = kwargs["data"]["price"]
+            self.active = kwargs["data"].get("active") == "on"
+        return httpx.Response(200, json=self.save_json)
+
+
+REJECTION = {"error": "Проверьте поля", "errors": [["price", "Минимальная цена 10 ₽"]]}
+
+
+class TestHelpersSurfaceFunPayRejection:
+    @pytest.mark.asyncio
+    async def test_price_change_rejected_raises_lot_save_error(self):
+        page = JsonAnsweringLotEditorPage(active=True, save_json=REJECTION)
+        with pytest.raises(fpx_err.FpxLotSaveError) as exc:
+            await editor_over(page).change_lot_price("42", "1")
+        assert exc.value.errors == {"price": "Минимальная цена 10 ₽"}
+        assert isinstance(exc.value, fpx_err.FpxLotEditingError)
+        assert page.price == "100"
+
+    @pytest.mark.asyncio
+    async def test_delete_rejected_no_longer_reports_success(self):
+        page = JsonAnsweringLotEditorPage(active=True, save_json={"error": "Нельзя удалить лот"})
+        with pytest.raises(fpx_err.FpxLotSaveError):
+            await editor_over(page).delete_lot("42")
+
+    @pytest.mark.asyncio
+    async def test_toggle_off_rejected_raises_lot_save_error(self):
+        page = JsonAnsweringLotEditorPage(active=True, save_json=REJECTION)
+        with pytest.raises(fpx_err.FpxLotSaveError):
+            await editor_over(page).toggle_off_lot("42")
+        assert page.active is True
+
+    @pytest.mark.asyncio
+    async def test_accepted_json_keeps_old_results(self):
+        page = JsonAnsweringLotEditorPage(active=False, save_json={"done": True})
+        assert await editor_over(page).toggle_on_lot("42") is True
+        assert await editor_over(page).change_lot_price("42", "150") is True
+        assert page.price == "150"

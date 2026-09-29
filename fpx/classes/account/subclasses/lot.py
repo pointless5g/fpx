@@ -1,7 +1,10 @@
 from typing import Any
 
-from fpx.models.lots import CurrentLotInfo, FieldOptions, LotCreationFields, LotEditor, LotField
+from fpx.models.lots import CurrentLotInfo, FieldOptions, LotCreationFields, LotEditor, LotField, MyLotRow
 from fpx.utils import errors as fpx_err
+
+# Поля формы редактора, которые LotEditor хранит отдельными атрибутами, а не в fields.
+_EDITOR_BASE_FIELDS = ("csrf_token", "form_created_at", "offer_id", "node_id", "location", "deleted")
 
 
 class LotManager:
@@ -42,6 +45,142 @@ class LotManager:
         other_fields = {k: v for k, v in data.items() if k not in base_fields}
         lot = LotEditor(**main_data, fields=other_fields)
         return lot
+
+    async def get_my_subcategory_lots(self, node_id: int | str) -> list[MyLotRow]:
+        """
+        Таблица своих лотов одной подкатегории (https://funpay.com/lots/<node_id>/trade),
+        как ``Account.get_my_subcategory_lots`` в FunPayAPI.
+
+        Args:
+            node_id (int | str): ID подкатегории.
+        Returns:
+            list[MyLotRow]: строки таблицы; пустой список, если лотов в подкатегории нет.
+        Raises:
+            FpxAuthError: сессия не авторизована.
+            FpxGetMyLotsError: ошибка запроса или парсинга таблицы.
+        """
+        try:
+            stage = "запроса данных с FunPay"
+            html = await self._account._client.lot_menu_by_category(node_id)
+            stage = "парсинга данных"
+            rows: list[MyLotRow] = self._account._parser.parse_my_lots_table(html, str(node_id))
+        except fpx_err.FpxAuthError:
+            raise
+        except Exception as e:
+            raise fpx_err.FpxGetMyLotsError(
+                f"Таблица лотов подкатегории {node_id}: при выполнении {stage} произошла ошибка: {e}"
+            ) from e
+        return rows
+
+    async def get_lot_fields(self, lot_id: int | str) -> LotEditor:
+        """
+        Читает форму редактора лота так, как ``Account.get_lot_fields`` в FunPayAPI.
+
+        В отличие от ``_get_lot_editor_details``: читает только форму редактора,
+        пропускает выборки в скрытых группах, сохраняет снятые чекбоксы пустой
+        строкой и заполняет ``LotEditor.currency`` и ``LotEditor.stored_amount``.
+        Возвращённый объект можно менять через его свойства и сохранять через ``save_lot``.
+
+        Args:
+            lot_id (int | str): ID лота.
+        Returns:
+            LotEditor: форма лота.
+        Raises:
+            FpxAuthError: сессия не авторизована.
+            FpxLotNotFoundError: FunPay отдал страницу ошибки (лот удалён или чужой).
+            FpxGetLotEditorInfoError: ошибка запроса или парсинга формы.
+        """
+        try:
+            stage = "запроса данных с FunPay"
+            html = await self._account._client.get_lot_editor_data(lot_id)
+            stage = "парсинга данных"
+            data = self._account._parser.parse_lot_fields(html)
+        except fpx_err.FpxAuthError:
+            raise
+        except fpx_err.FpxLotNotFoundError as e:
+            raise fpx_err.FpxLotNotFoundError(
+                f"Лот {lot_id} не открылся в редакторе: {e.error_message}",
+                lot_id=str(lot_id),
+                error_message=e.error_message,
+            ) from e
+        except Exception as e:
+            raise fpx_err.FpxGetLotEditorInfoError(f"При выполнении {stage} произошла ошибка: {e}") from e
+        fields = dict(data["fields"])
+        base = {key: str(fields.pop(key, "")) for key in _EDITOR_BASE_FIELDS}
+        return LotEditor(
+            csrf_token=base["csrf_token"],
+            form_created_at=base["form_created_at"],
+            offer_id=base["offer_id"] or str(lot_id),
+            node_id=base["node_id"],
+            location=base["location"],
+            deleted=base["deleted"],
+            fields=fields,
+            currency=data["currency"],
+            stored_amount=data["stored_amount"],
+        )
+
+    def _check_save_response(self, response: Any, lot_id: int | str, *, strict: bool = False) -> None:
+        """
+        Проверяет ответ на ``POST /lots/offerSave``, как ``save_offer`` в FunPayAPI.
+
+        Args:
+            response: ответ FunPay.
+            lot_id (int | str): ID лота (для текста ошибки).
+            strict (bool): True — ответ не 200 или не JSON-объект считается
+                неизвестным исходом и поднимает FpxRequestError. False — такие
+                ответы пропускаются (их проверяют сами хелперы редактора).
+        Raises:
+            FpxLotSaveError: FunPay вернул ``error`` или ``errors``.
+            FpxRequestError: (только strict) ответ не 200 или не JSON-объект.
+        """
+        try:
+            body = response.json()
+        except Exception:
+            body = None
+        rejection = self._account._parser.parse_lot_save_response(body) if isinstance(body, dict) else None
+        if rejection is not None:
+            error_message, errors = rejection
+            details = "; ".join(f"{k}: {v}" if k else v for k, v in errors.items())
+            reason = ". ".join(part for part in (error_message, details) if part) or "без описания"
+            raise fpx_err.FpxLotSaveError(
+                f"FunPay не сохранил лот {lot_id}: {reason}",
+                lot_id=str(lot_id),
+                error_message=error_message,
+                errors=errors,
+            )
+        if not strict:
+            return
+        status = getattr(response, "status_code", None)
+        if status != 200:
+            raise fpx_err.FpxRequestError(f"Сохранение лота {lot_id}: FunPay ответил статусом {status}")
+        if not isinstance(body, dict):
+            raise fpx_err.FpxRequestError(
+                f"Сохранение лота {lot_id}: FunPay ответил не JSON-объектом, результат неизвестен"
+            )
+
+    async def save_lot(self, lot: LotEditor) -> None:
+        """
+        Сохраняет отредактированный лот целиком (``POST /lots/offerSave``),
+        как ``Account.save_lot`` в FunPayAPI. Отправляет ``lot.fields`` как есть,
+        поэтому поля, которые не менялись (например, снятый чекбокс «Активное»
+        или пустое «Наличие»), уходят такими, какими пришли из редактора.
+
+        Args:
+            lot (LotEditor): форма из ``get_lot_fields``, изменённая через свойства.
+        Raises:
+            FpxLotSaveError: FunPay отклонил сохранение (``error``/``errors`` в ответе);
+                ошибки по полям — в ``errors``.
+            FpxRequestError: запрос не выполнен или ответ не позволяет понять исход
+                (статус не 200, ответ не JSON).
+            FpxAuthError: сессия не авторизована.
+        """
+        try:
+            response = await self._account._client.edit_lot(lot)
+        except fpx_err.FpxError:
+            raise
+        except Exception as e:
+            raise fpx_err.FpxRequestError(f"Запрос сохранения лота {lot.offer_id} не выполнен: {e}") from e
+        self._check_save_response(response, lot.offer_id, strict=True)
 
     async def get_lot_secrets(self, lot_id: int | str) -> list[str]:
         """
@@ -198,6 +337,6 @@ class LotManager:
             if r.status_code == 200:
                 return True
             else:
-                raise fpx_err.FpxRequestError(f'Сервер не ответил успешно. Код ошибки: {r.status_code} - {r.json()}')
+                raise fpx_err.FpxRequestError(f"Сервер не ответил успешно. Код ошибки: {r.status_code} - {r.json()}")
         except Exception as e:
-            raise fpx_err.FpxLotEditingError('Не удалось скрыть все лоты') from e
+            raise fpx_err.FpxLotEditingError("Не удалось скрыть все лоты") from e

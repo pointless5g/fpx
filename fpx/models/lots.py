@@ -39,6 +39,18 @@ class CurrentLotInfo:
 
 @dataclass
 class LotEditor:
+    """
+    Форма редактора лота (https://funpay.com/lots/offerEdit?offer=...).
+
+    ``fields`` — поля формы в том виде, в каком они уйдут в ``POST /lots/offerSave``.
+    Свойства ниже (порт ``LotFields`` из FunPayAPI) читают и пишут прямо в ``fields``,
+    поэтому после их изменения объект можно сразу сохранить через
+    ``LotManager.save_lot`` (или старый ``FunPayClient.edit_lot``).
+
+    ``currency`` и ``stored_amount`` заполняет только ``LotManager.get_lot_fields``;
+    у объекта из ``LotManager._get_lot_editor_details`` они остаются пустыми.
+    """
+
     csrf_token: str
     form_created_at: str
     offer_id: str
@@ -46,6 +58,225 @@ class LotEditor:
     location: str
     deleted: str
     fields: dict[str, Any] = field(default_factory=dict)
+    # Код валюты лота из подписи у поля цены: "RUB", "USD", "EUR"; "" — не удалось определить.
+    currency: str = ""
+    # Наличие, которое FunPay хранит у лота (JSON в data-offer формы); None — неизвестно.
+    stored_amount: int | None = None
+
+    def _text(self, key: str) -> str:
+        value = self.fields.get(key)
+        return "" if value is None else str(value)
+
+    def _checkbox(self, key: str) -> bool | None:
+        """None — чекбокса нет в форме; иначе отмечен ли он."""
+        if key not in self.fields:
+            return None
+        return bool(self.fields[key])
+
+    def _set_checkbox(self, key: str, value: bool | None) -> None:
+        if value is None:
+            self.fields.pop(key, None)
+        else:
+            self.fields[key] = "on" if value else ""
+
+    @property
+    def title_ru(self) -> str:
+        """Краткое описание (название) лота на русском."""
+        return self._text("fields[summary][ru]")
+
+    @title_ru.setter
+    def title_ru(self, value: str) -> None:
+        self.fields["fields[summary][ru]"] = value
+
+    @property
+    def title_en(self) -> str:
+        """Краткое описание (название) лота на английском."""
+        return self._text("fields[summary][en]")
+
+    @title_en.setter
+    def title_en(self, value: str) -> None:
+        self.fields["fields[summary][en]"] = value
+
+    @property
+    def description_ru(self) -> str:
+        """Подробное описание лота на русском."""
+        return self._text("fields[desc][ru]")
+
+    @description_ru.setter
+    def description_ru(self, value: str) -> None:
+        self.fields["fields[desc][ru]"] = value
+
+    @property
+    def description_en(self) -> str:
+        """Подробное описание лота на английском."""
+        return self._text("fields[desc][en]")
+
+    @description_en.setter
+    def description_en(self, value: str) -> None:
+        self.fields["fields[desc][en]"] = value
+
+    @property
+    def payment_msg_ru(self) -> str:
+        """Сообщение покупателю после оплаты на русском."""
+        return self._text("fields[payment_msg][ru]")
+
+    @payment_msg_ru.setter
+    def payment_msg_ru(self, value: str) -> None:
+        self.fields["fields[payment_msg][ru]"] = value
+
+    @property
+    def payment_msg_en(self) -> str:
+        """Сообщение покупателю после оплаты на английском."""
+        return self._text("fields[payment_msg][en]")
+
+    @payment_msg_en.setter
+    def payment_msg_en(self, value: str) -> None:
+        self.fields["fields[payment_msg][en]"] = value
+
+    @property
+    def images(self) -> list[int]:
+        """ID картинок лота."""
+        return [int(i) for i in self._text("fields[images]").split(",") if i.strip().isdecimal()]
+
+    @images.setter
+    def images(self, value: list[int]) -> None:
+        self.fields["fields[images]"] = ",".join(str(i) for i in value)
+
+    @property
+    def price(self) -> float | None:
+        """Цена за 1 шт.; None, если поле цены пустое или его нет."""
+        raw = self._text("price").strip()
+        if not raw:
+            return None
+        try:
+            return float(raw)
+        except ValueError:
+            return None
+
+    @price.setter
+    def price(self, value: float | None) -> None:
+        self.fields["price"] = "" if value is None else str(value)
+
+    @property
+    def auto_delivery(self) -> bool | None:
+        """Включена ли автовыдача FunPay; None — в категории нет автовыдачи."""
+        return self._checkbox("auto_delivery")
+
+    @auto_delivery.setter
+    def auto_delivery(self, value: bool | None) -> None:
+        self._set_checkbox("auto_delivery", value)
+
+    @property
+    def deactivate_after_sale(self) -> bool | None:
+        """Деактивировать ли лот после продажи; None — такого чекбокса нет."""
+        return self._checkbox("deactivate_after_sale")
+
+    @deactivate_after_sale.setter
+    def deactivate_after_sale(self, value: bool | None) -> None:
+        self._set_checkbox("deactivate_after_sale", value)
+
+    @property
+    def active_checkbox(self) -> bool:
+        """Отмечен ли чекбокс «Активное» в форме (без учёта наличия)."""
+        return self._text("active") == "on"
+
+    @property
+    def active(self) -> bool:
+        """
+        Активен ли лот, как его считает FunPayAPI: False, если FunPay хранит
+        у лота наличие 0 (чекбокс при этом может оставаться отмеченным), иначе —
+        состояние чекбокса «Активное».
+
+        Запись меняет только чекбокс: у лота с сохранённым наличием 0 свойство
+        останется False до следующего чтения после сохранения нового наличия.
+        """
+        if self.stored_amount == 0:
+            return False
+        return self.active_checkbox
+
+    @active.setter
+    def active(self, value: bool) -> None:
+        self.fields["active"] = "on" if value else ""
+
+    @property
+    def secrets(self) -> list[str]:
+        """Товары встроенной автовыдачи FunPay (непустые строки)."""
+        return [i for i in self._text("secrets").strip().split("\n") if i]
+
+    @secrets.setter
+    def secrets(self, value: list[str]) -> None:
+        self.fields["secrets"] = "\n".join(value)
+
+    @property
+    def amount(self) -> int | None:
+        """
+        Количество товара.
+
+        При включённой автовыдаче — число товаров автовыдачи (как в FunPayAPI).
+        Иначе значение поля «Наличие»; None, если поля нет в форме или оно пустое
+        (пустое «Наличие» FunPay не ограничивает). FunPayAPI читает пустое поле
+        как 0 — здесь 0 значит именно ноль.
+
+        Запись кладёт число в поле «Наличие» как есть: 0 уходит на FunPay как "0",
+        None очищает поле. FunPayAPI, в отличие от этого, отправлял 0 пустой
+        строкой, то есть как неограниченное наличие.
+        """
+        if self.auto_delivery:
+            return len(self.secrets)
+        raw = self._text("amount").strip()
+        return int(raw) if raw.isdecimal() else None
+
+    @amount.setter
+    def amount(self, value: int | None) -> None:
+        self.fields["amount"] = "" if value is None else str(value)
+
+    @property
+    def subcategory_id(self) -> int | None:
+        """ID подкатегории (node_id) числом."""
+        node = str(self.node_id).strip()
+        return int(node) if node.isdecimal() else None
+
+    @property
+    def public_link(self) -> str:
+        """Публичная ссылка на лот."""
+        return f"https://funpay.com/lots/offer?id={self.offer_id}"
+
+    @property
+    def private_link(self) -> str:
+        """Ссылка на редактор лота."""
+        return f"https://funpay.com/lots/offerEdit?offer={self.offer_id}"
+
+
+@dataclass
+class MyLotRow:
+    """
+    Строка таблицы своих лотов подкатегории (https://funpay.com/lots/<node>/trade).
+    Порт ``MyLotShortcut`` из FunPayAPI.
+    """
+
+    offer_id: str
+    node_id: str
+    description: str | None
+    server: str | None
+    side: str | None
+    amount: int | None
+    price: float
+    # Код валюты: "RUB", "USD", "EUR"; "" — не удалось определить.
+    currency: str
+    auto_delivery: bool
+    # False у строк с классом warning: FunPay не показывает такой лот покупателям.
+    active: bool
+    html: str = field(default="", repr=False)
+
+    @property
+    def public_link(self) -> str:
+        """Публичная ссылка на лот."""
+        return f"https://funpay.com/lots/offer?id={self.offer_id}"
+
+    @property
+    def private_link(self) -> str:
+        """Ссылка на редактор лота."""
+        return f"https://funpay.com/lots/offerEdit?offer={self.offer_id}"
 
 
 @dataclass

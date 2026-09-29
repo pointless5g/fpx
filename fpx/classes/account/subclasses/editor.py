@@ -15,8 +15,18 @@ class FunPayEditor:
     async def _changing_lot_base(
         self, lot_id: int | str, lot: LotEditor, fining_fields: str | None, new_fields: str | int | None
     ) -> bool:
+        """
+        Сохраняет лот и проверяет, что поле ``fining_fields`` на сайте стало ``new_fields``.
+
+        Raises:
+            FpxLotSaveError: FunPay отклонил сохранение (подкласс FpxLotEditingError).
+            FpxLotEditingError: данные на сайте остались старыми.
+            FpxRequestError: сервер ответил не 200.
+        """
         response = await self._account._client.edit_lot(lot)
         if response.status_code == 200:
+            # FunPay отвечает 200 и на отказ: ошибки лежат в JSON (error/errors).
+            self._account.lot._check_save_response(response, lot_id)
             await asyncio.sleep(0.5)
             try:
                 new_lot = await self._account.lot._get_lot_editor_details(lot_id)
@@ -173,10 +183,12 @@ class FunPayEditor:
             bool: True - лот выключен
         Raises:
             FpxRequestError: Сервер не ответил
+            FpxLotSaveError: FunPay отклонил сохранение (ошибки полей в .errors)
         """
         lot = await self._account.lot._get_lot_editor_details(lot_id)
         response = await self._account._client.edit_lot(lot, active=False)
         if response.status_code == 200:
+            self._account.lot._check_save_response(response, lot_id)
             return True
         raise fpx_err.FpxRequestError("Ошибка отправки запроса на изменение деталей лота")
 
@@ -190,9 +202,11 @@ class FunPayEditor:
             bool: True - лот включен
         Raises:
             FpxRequestError: Сервер не ответил
+            FpxLotSaveError: FunPay отклонил сохранение (ошибки полей в .errors)
         """
         lot = await self._account.lot._get_lot_editor_details(lot_id)
         response = await self._account._client.edit_lot(lot, active=True)
         if response.status_code == 200:
+            self._account.lot._check_save_response(response, lot_id)
             return True
         raise fpx_err.FpxRequestError("Ошибка отправки запроса на изменение деталей лота")

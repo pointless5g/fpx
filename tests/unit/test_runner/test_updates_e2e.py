@@ -48,6 +48,8 @@ class FakeFunPay:
         self.bookmarks_limit = 50
         # Действия, которые происходят на сайте прямо перед ответом на очередной /runner/.
         self.before_runner: list[Callable[[], None]] = []
+        # Сколько раз подряд страница заказа ответит 429.
+        self.rate_limited_orders: dict[str, int] = {}
 
     # -- что происходит на FunPay
     def say(self, text: str, author: int = BUYER_ID, node: int = NODE) -> None:
@@ -229,7 +231,11 @@ class FakeFunPay:
         elif path == "/orders/trade":
             html = self.sales_page()
         elif path.startswith("/orders/") and path != "/orders/":
-            html = self.order_page(path.strip("/").split("/")[-1])
+            order_id = path.strip("/").split("/")[-1]
+            if self.rate_limited_orders.get(order_id):
+                self.rate_limited_orders[order_id] -= 1
+                return httpx.Response(429, headers={"Retry-After": "0"})
+            html = self.order_page(order_id)
         elif path == f"/users/{SHOP_ID}/":
             html = self.profile_page()
         else:
@@ -560,3 +566,26 @@ def test_many_changed_chats_are_loaded_in_batches_of_ten(site: FakeFunPay) -> No
     run(fp, scenario)
     assert sorted(seen) == sorted(f"from {node}" for node in range(1000, 1012))
     assert [len(call) for call in site.runner_calls] == [2, 10, 2]
+
+
+def test_an_order_whose_page_did_not_load_is_read_again_on_the_next_tick(site: FakeFunPay) -> None:
+    """Три 429 подряд на странице заказа не теряют оплату: заказ сверяется снова."""
+    fp = make_tools(site)
+    seen: list[str] = []
+
+    @fp.router.on_new_order()
+    async def on_new_order(order: types.Order) -> None:
+        seen.append(str(order.order_id))
+
+    async def scenario() -> None:
+        await tick(fp)
+        await tick(fp)
+        site.rate_limited_orders["NEW1"] = 3
+        site.pay("NEW1")
+        assert await tick(fp) == ["FpxGetOrderInfoError"]
+        assert seen == []
+        assert await tick(fp) == []
+        assert await tick(fp) == []
+
+    run(fp, scenario)
+    assert seen == ["NEW1"]

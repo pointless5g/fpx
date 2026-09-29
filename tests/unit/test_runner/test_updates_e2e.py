@@ -20,6 +20,9 @@ import pytest
 
 from fpx import FunPayTools, types
 from fpx.utils import errors as fpx_err
+from fpx.utils.storage.base import BaseStorage
+from fpx.utils.storage.file import FileStorage
+from fpx.utils.storage.memory import MemoryStorage
 
 SHOP_ID, SHOP = 1000, "shop"
 BUYER_ID, BUYER = 2000, "buyer1"
@@ -242,14 +245,14 @@ def site() -> FakeFunPay:
     return FakeFunPay()
 
 
-def make_tools(site: FakeFunPay) -> FunPayTools:
+def make_tools(site: FakeFunPay, storage: BaseStorage | None = None) -> FunPayTools:
     # Создаётся вне event loop, поэтому fpx не запускает фоновое обновление куков.
     client = httpx.AsyncClient(
         transport=httpx.MockTransport(site.handle),
         base_url="https://funpay.com",
         follow_redirects=True,
     )
-    return FunPayTools(GKEY, http_client=client)
+    return FunPayTools(GKEY, storage=storage, http_client=client)
 
 
 async def tick(fp: FunPayTools) -> list[str]:
@@ -560,3 +563,133 @@ def test_many_changed_chats_are_loaded_in_batches_of_ten(site: FakeFunPay) -> No
     run(fp, scenario)
     assert sorted(seen) == sorted(f"from {node}" for node in range(1000, 1012))
     assert [len(call) for call in site.runner_calls] == [2, 10, 2]
+
+
+# -- перезапуск: раннер продолжает с места, записанного в storage
+
+
+async def two_ticks(fp: FunPayTools) -> None:
+    await tick(fp)  # прогрев
+    await tick(fp)
+
+
+def test_messages_sent_while_the_runner_was_stopped_arrive_after_restart(site: FakeFunPay) -> None:
+    storage = MemoryStorage()
+    fp = make_tools(site, storage)
+    run(fp, lambda: two_ticks(fp))
+
+    site.say("логин")
+    site.say("пароль")
+
+    fp = make_tools(site, storage)
+    seen = collect_messages(fp)
+    run(fp, lambda: two_ticks(fp))
+    assert seen == ["логин", "пароль"]
+
+
+def test_a_chat_opened_while_the_runner_was_stopped_is_read_from_its_start(site: FakeFunPay) -> None:
+    storage = MemoryStorage()
+    fp = make_tools(site, storage)
+    run(fp, lambda: two_ticks(fp))
+
+    site.open_chat(777, 3000, "buyer2")
+    site.say("Здравствуйте, есть робуксы?", author=3000, node=777)
+
+    fp = make_tools(site, storage)
+    seen = collect_messages(fp)
+    run(fp, lambda: two_ticks(fp))
+    assert seen == ["Здравствуйте, есть робуксы?"]
+
+
+def listen_to_orders(fp: FunPayTools, events: list[tuple[str, str]]) -> None:
+    @fp.router.on_new_order()
+    async def on_new_order(order: types.Order) -> None:
+        events.append(("new", str(order.order_id)))
+
+    @fp.router.on_confirmed_orders()
+    async def on_confirmed(order: types.Order) -> None:
+        events.append(("confirmed", str(order.order_id)))
+
+
+def test_an_order_paid_while_the_runner_was_stopped_arrives_after_restart(site: FakeFunPay) -> None:
+    site.add_order("OPEN1")
+    storage = MemoryStorage()
+    events: list[tuple[str, str]] = []
+    fp = make_tools(site, storage)
+    listen_to_orders(fp, events)
+    run(fp, lambda: two_ticks(fp))
+    assert events == []
+
+    site.pay("GONE1")
+    site.confirm("OPEN1")
+
+    fp = make_tools(site, storage)
+    listen_to_orders(fp, events)
+
+    async def second() -> None:
+        await tick(fp)
+        assert events == [], "прогрев событий не отдаёт, их отдаёт первый тик"
+        await tick(fp)
+
+    run(fp, second)
+    assert sorted(events) == [("confirmed", "OPEN1"), ("new", "GONE1")]
+
+
+def test_nothing_is_delivered_twice_across_restarts(site: FakeFunPay) -> None:
+    storage = MemoryStorage()
+    events: list[tuple[str, str]] = []
+    for number in range(3):
+        fp = make_tools(site, storage)
+        listen_to_orders(fp, events)
+
+        @fp.router.on_message()
+        async def on_message(message: types.Message) -> None:
+            events.append(("message", message.text))
+
+        run(fp, lambda fp=fp: two_ticks(fp))
+        site.pay(f"PAID{number}")
+        site.say(f"оплатил, запуск {number}")
+
+    # Что пришло после третьего запуска, прочитает четвёртый.
+    assert events == [
+        ("new", "PAID0"),
+        ("message", "оплатил, запуск 0"),
+        ("new", "PAID1"),
+        ("message", "оплатил, запуск 1"),
+    ]
+
+
+def test_the_place_survives_in_a_file_storage(site: FakeFunPay, tmp_path: Any) -> None:
+    path = str(tmp_path / "fpx.json")
+    fp = make_tools(site, FileStorage(path))
+    run(fp, lambda: two_ticks(fp))
+
+    site.say("пока бот перезапускался")
+
+    fp = make_tools(site, FileStorage(path))
+    seen = collect_messages(fp)
+    run(fp, lambda: two_ticks(fp))
+    assert seen == ["пока бот перезапускался"]
+
+
+def test_a_warm_up_after_a_failure_resumes_instead_of_skipping(site: FakeFunPay) -> None:
+    """Раннер прогревается заново после неудачного тика; пришедшее за это время не теряется."""
+    fp = make_tools(site)
+    seen = collect_messages(fp)
+
+    async def scenario() -> None:
+        await tick(fp)
+        fp.runner._cache_is_updated = False  # так раннер уходит на прогрев после сбоя
+        site.say("во время сбоя")
+        await two_ticks(fp)
+
+    run(fp, scenario)
+    assert seen == ["во время сбоя"]
+
+
+def test_without_a_saved_place_the_first_start_skips_history(site: FakeFunPay) -> None:
+    site.say("до первого запуска")
+    fp = make_tools(site, MemoryStorage())
+    seen = collect_messages(fp)
+    run(fp, lambda: two_ticks(fp))
+    assert seen == []

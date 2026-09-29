@@ -112,6 +112,19 @@ class FpxRequestError(FpxAccountError):
         super().__init__(message)
 
 
+class FpxRequestOutcomeUnknownError(FpxRequestError):
+    """
+    Запрос на изменение (POST) мог выполниться, а мог и нет.
+
+    Сервер ответил 502/503/504 или ответ не дошёл. Такой запрос не повторяется
+    сам: повторная отправка сообщения задвоит его у покупателя. Решать, повторять
+    ли, должен вызывающий код, например проверив чат.
+    """
+
+    def __init__(self, message: str = "Запрос мог выполниться: ответ сервера не получен, повтор не отправлен") -> None:
+        super().__init__(message)
+
+
 class FpxLotEditingError(FpxAccountError):
     """Ошибка при редактировании лота."""
 

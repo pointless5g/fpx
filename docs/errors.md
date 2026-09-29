@@ -16,6 +16,7 @@ FpxError
 │   ├── FpxRaisingLotError
 │   ├── FpxRefundError
 │   ├── FpxRequestError
+│   │   └── FpxRequestOutcomeUnknownError
 │   ├── FpxLotEditingError
 │   ├── FpxAnswerReviewError
 │   ├── FpxDeleteReviewError
@@ -65,6 +66,7 @@ FpxError
 | `FpxRaisingLotError` | Не удалось поднять лоты (нет лотов или ошибка) |
 | `FpxRefundError` | Возврат не прошёл |
 | `FpxRequestError` | Сеть упала, сервер не ответил, превышены попытки |
+| `FpxRequestOutcomeUnknownError` | POST мог выполниться: сервер ответил 502/503/504, ответ не пришёл или соединение оборвалось. Сам не повторяется, чтобы не отправить сообщение дважды |
 | `FpxLotEditingError` | Цена не поменялась после редактирования |
 | `FpxAnswerReviewError` | Ответ на отзыв не сохранился |
 | `FpxDeleteReviewError` | Отзыв или ответ на отзыв не удалось удалить |

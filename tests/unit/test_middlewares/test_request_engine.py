@@ -262,6 +262,17 @@ class TestRequestEngineServerErrors:
         with pytest.raises(fpx_err.FpxRequestError):
             await engine.execute("GET", "/chat/")
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [502, 503, 504])
+    async def test_5xx_on_post_is_not_retried(self, account, http_client, monkeypatch, status):
+        """FunPay мог выполнить запрос: повтор отправил бы сообщение второй раз."""
+        monkeypatch.setattr("asyncio.sleep", AsyncMock())
+        http_client.request = AsyncMock(side_effect=[make_response(status), make_response(200)])
+        engine = RequestEngine(account, http_client)
+        with pytest.raises(fpx_err.FpxRequestOutcomeUnknownError):
+            await engine.execute("POST", "/runner/", data={})
+        assert http_client.request.await_count == 1
+
 
 class TestRequestEngineTimeouts:
     @pytest.mark.asyncio
@@ -281,6 +292,30 @@ class TestRequestEngineTimeouts:
             await engine.execute("POST", "/runner/", data={})
         assert http_client.request.await_count == 1
         assert isinstance(exc.value.__cause__, httpx.ReadTimeout)
+
+    @pytest.mark.asyncio
+    async def test_post_read_timeout_is_an_unknown_outcome(self, account, http_client):
+        http_client.request = AsyncMock(side_effect=httpx.ReadTimeout("timeout"))
+        engine = RequestEngine(account, http_client)
+        with pytest.raises(fpx_err.FpxRequestOutcomeUnknownError):
+            await engine.execute("POST", "/runner/", data={})
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error", [httpx.ReadError, httpx.RemoteProtocolError, httpx.WriteError])
+    async def test_a_broken_connection_after_a_post_is_an_unknown_outcome(self, account, http_client, error):
+        http_client.request = AsyncMock(side_effect=error("broken"))
+        engine = RequestEngine(account, http_client)
+        with pytest.raises(fpx_err.FpxRequestOutcomeUnknownError) as exc:
+            await engine.execute("POST", "/runner/", data={})
+        assert http_client.request.await_count == 1
+        assert isinstance(exc.value.__cause__, error)
+
+    @pytest.mark.asyncio
+    async def test_a_broken_connection_on_get_is_passed_through(self, account, http_client):
+        http_client.request = AsyncMock(side_effect=httpx.ReadError("broken"))
+        engine = RequestEngine(account, http_client)
+        with pytest.raises(httpx.ReadError):
+            await engine.execute("GET", "/chat/")
 
     @pytest.mark.asyncio
     async def test_connect_error_retries_then_raises(self, account, http_client, monkeypatch):

@@ -200,3 +200,11 @@ class GameSubCategory:
 class Game:
     title: GameTitle
     subcategories: list[GameSubCategory] = field(default_factory=list)
+
+
+@dataclass
+class OrdersCounters:
+    """Счётчики незавершённых заказов из /runner/ (объект orders_counters): покупки и продажи."""
+
+    buyer: int
+    seller: int

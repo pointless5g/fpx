@@ -560,3 +560,25 @@ def test_many_changed_chats_are_loaded_in_batches_of_ten(site: FakeFunPay) -> No
     run(fp, scenario)
     assert sorted(seen) == sorted(f"from {node}" for node in range(1000, 1012))
     assert [len(call) for call in site.runner_calls] == [2, 10, 2]
+
+
+def test_changed_order_counters_reach_their_handler_without_loading_pages(site: FakeFunPay) -> None:
+    fp = make_tools(site)
+    seen: list[tuple[int, int]] = []
+
+    @fp.router.on_orders_counters()
+    async def on_counters(counters: types.OrdersCounters) -> None:
+        seen.append((counters.buyer, counters.seller))
+
+    async def scenario() -> None:
+        await tick(fp)
+        await tick(fp)
+        site.requests.clear()
+        site.add_order("QUIET1")
+        await tick(fp)
+        await tick(fp)
+
+    run(fp, scenario)
+    assert seen == [(0, 1)]
+    # Хендлеров заказов нет: страница продаж не загружалась.
+    assert site.requests == ["POST /runner/", "POST /runner/"]

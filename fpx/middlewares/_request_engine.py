@@ -87,6 +87,9 @@ class RequestEngine:
     async def _send(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         attempts = 3
         backoff = 1.5  # множитель времени ожидания
+        # Запрос на изменение, который мог дойти до сервера, не повторяется: FunPay мог его
+        # выполнить, и повтор отправит сообщение или сохранит лот ещё раз.
+        write = method.upper() in _WRITE_METHODS
         for attempt in range(attempts):
             try:
                 response = await self._client.request(method, url, **kwargs)
@@ -105,6 +108,10 @@ class RequestEngine:
                     continue
                 # если чето сервер не ответил
                 if response.status_code in (502, 503, 504):
+                    if write:
+                        raise fpx_err.FpxRequestOutcomeUnknownError(
+                            f"{method} {url}: сервер ответил {response.status_code}, запрос мог выполниться"
+                        )
                     sleep_time = backoff ** float(attempt)
                     await asyncio.sleep(sleep_time)
                     continue
@@ -112,14 +119,20 @@ class RequestEngine:
                     raise fpx_err.FpxAuthError("Неверный gkey, обнови свои куки.")
                 return response
             except httpx.ReadTimeout as e:
-                if method.upper() == "GET":
-                    if attempt == attempts - 1:
-                        raise
-                    await asyncio.sleep(backoff**attempt)
-                else:
-                    raise fpx_err.FpxRequestError(
-                        message=f"POST запрос упал по таймауту ответаВозможно действие выполнилось: {e}"
+                if write:
+                    raise fpx_err.FpxRequestOutcomeUnknownError(
+                        f"{method} {url} упал по таймауту ответа, запрос мог выполниться: {e}"
                     ) from e
+                if attempt == attempts - 1:
+                    raise
+                await asyncio.sleep(backoff**attempt)
+            except (httpx.ReadError, httpx.WriteError, httpx.WriteTimeout, httpx.RemoteProtocolError) as e:
+                # Соединение оборвалось, когда запрос мог уже уйти.
+                if write:
+                    raise fpx_err.FpxRequestOutcomeUnknownError(
+                        f"{method} {url}: соединение оборвалось, запрос мог выполниться: {e}"
+                    ) from e
+                raise
             except (httpx.ConnectTimeout, httpx.ConnectError):
                 if attempt == attempts - 1:
                     raise

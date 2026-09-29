@@ -77,6 +77,16 @@ async def refunded(order: types.Order):
 | `name` | `str` | Название товара |
 | `category` | `str` | Категория |
 | `review` | `dict` | Отзыв (если есть) |
+| `buyer_id` | `int \| None` | ID покупателя |
+| `currency` | `Currency \| None` | Валюта цены (`Currency.RUB` / `USD` / `EUR`) |
+| `subcategory_id` | `int \| None` | ID подкатегории FunPay |
+| `subcategory_type` | `str \| None` | `lot` — обычные лоты, `chip` — игровая валюта |
+| `created_at` | `datetime \| None` | Дата заказа по Москве (aware) |
+| `status_kind` | `OrderStatusKind \| None` | Статус без привязки к языку: `paid` / `closed` / `refunded` |
+| `chat_name` | `str \| None` | Имя чата с покупателем `users-<ID>-<ID>` |
+
+Поля `buyer_id` … `chat_name` заполняет таблица продаж (`get_my_sells`); в хендлеры раннера
+они пока не передаются.
 
 ### Методы
 
@@ -99,6 +109,31 @@ order = await fp.account.order.get_order_details("ABC123")
 print(order.status)
 print(order.description)
 ```
+
+### `await fp.account.order.get_order(order_id, locale=None)`
+
+Заказ через JSON API FunPay (`POST /api/orders/get`) — как `get_order` в FunPayAPI.
+Возвращает `OrderInfo`: в отличие от `get_order_details`, в нём есть ID покупателя и продавца,
+имя чата, подкатегория, валюта, поля оплаченного лота и товары автовыдачи.
+
+```python
+info = await fp.account.order.get_order("ABC123")
+print(info.status)                # OrderStatusKind.PAID
+print(info.buyer_id, info.chat_name)
+print(info.sum, info.currency)    # сумма заказа
+print(info.amount)                # количество товара
+print(info.short_description)
+print(info.lot_params)            # [("Способ", "Геймпасс"), ...]
+```
+
+`locale` (`ru` / `en` / `uk`) уходит в `Accept-Language` и выбирает язык значений полей.
+При любой ошибке — `FpxGetOrderInfoError`, исходная причина в `__cause__`
+(`FpxAuthError` на 403, `FpxRequestError` на другой не-200, `FpxParseError` на ответ без `SUCCESS`).
+
+### `await fp.account.order.get_orders(order_ids, locale=None)`
+
+То же для 1–10 заказов одним запросом. Возвращает `dict[str, OrderInfo]`; заказов, которых FunPay
+не вернул, в словаре нет. Больше 10 ID — `FpxAttributeError`.
 
 ### `await fp.account.order.refund_order(order_id)`
 

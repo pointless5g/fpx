@@ -141,6 +141,23 @@ class FunPayClient:
         r = await self._account._request_engine.execute("GET", f"/orders/{order_id}/")
         return r.text
 
+    async def get_orders_api(self, order_ids: list[str], locale: str | None = None) -> httpx.Response:
+        """
+        Заказы через JSON API FunPay: ``POST /api/orders/get``, как ``FunPayAPI.Account.get_orders_by_ids``.
+
+        Тело — JSON ``{"order_uids": [...], "include": ["details", "users", "review"]}``.
+        ``execute`` кладёт csrf-токен в ``data=``, но httpx при заданном ``content=`` тело из ``data``
+        не собирает, поэтому уходит ровно этот JSON, а токен остаётся в заголовке ``X-Cp-Csrf-Token``.
+        """
+        payload = {"order_uids": [str(order_id) for order_id in order_ids], "include": ["details", "users", "review"]}
+        headers = {"Content-Type": "application/json"}
+        if locale:
+            headers["Accept-Language"] = locale
+        r = await self._account._request_engine.execute(
+            "POST", "/api/orders/get", content=json.dumps(payload), headers=headers
+        )
+        return r
+
     async def get_lot_editor_data(self, lot_id: str | int) -> str:
         r = await self._account._request_engine.execute("GET", f"/lots/offerEdit?offer={lot_id}")
         return r.text

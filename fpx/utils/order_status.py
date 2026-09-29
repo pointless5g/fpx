@@ -12,6 +12,10 @@ class OrderStatusKind(str, Enum):
     PAID = "paid"
     CLOSED = "closed"
     REFUNDED = "refunded"
+    # Два статуса ниже приходят только из JSON API заказа (OrderManager.get_order):
+    # в таблицах продаж/покупок и в тексте страницы их нет, classify_order_status их не выдаёт.
+    PARTIALLY_REFUNDED = "partially_refunded"
+    UNPAID = "unpaid"
 
 
 # Известные подписи FunPay (ru / en / uk) и близкие морфологические формы.

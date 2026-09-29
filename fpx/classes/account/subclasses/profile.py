@@ -12,6 +12,24 @@ from fpx.models.account import (
 )
 from fpx.models.lots import LotInfo
 from fpx.utils import errors as fpx_err
+from fpx.utils.formatting import private_chat_name
+
+
+def order_row_fields(row: dict[str, Any], my_user_id: Any) -> dict[str, Any]:
+    """
+    Поля строки таблицы заказов (``parse_my_sells``), общие для ``Order`` и ``Purchase``.
+
+    ID собеседника (``client-id``) сюда не входит: у продажи это ``buyer_id``, у покупки — ``seller_id``.
+    Имя чата собирается здесь, а не в парсере: для него нужен ID владельца сессии.
+    """
+    return {
+        "currency": row.get("currency"),
+        "subcategory_id": row.get("subcategory-id"),
+        "subcategory_type": row.get("subcategory-type"),
+        "created_at": row.get("created-at"),
+        "status_kind": row.get("status-kind"),
+        "chat_name": private_chat_name(my_user_id, row.get("client-id")),
+    }
 
 
 class ProfileManager:
@@ -62,11 +80,19 @@ class ProfileManager:
                 - status (str): Статус заказа.
                 - name (str): Название заказа.
                 - category (str): Категория заказа.
+                - buyer_id (int | None): ID покупателя.
+                - currency (Currency | None): Валюта цены.
+                - subcategory_id (int | None), subcategory_type (str | None): Подкатегория (``lot``/``chip``).
+                - created_at (datetime | None): Дата заказа по Москве.
+                - status_kind (OrderStatusKind): Статус независимо от языка аккаунта.
+                - chat_name (str | None): Имя чата с покупателем ``users-<ID>-<ID>``.
         Raises:
             FpxGetUserSellsError: Ошибка запроса продаж
         """
         counter = 0
         stage = "запроса данных FunPay"
+        subcategories: dict[str, tuple[str, int]] | None = None
+        page_user_id: str | None = None
         try:
             next_stage = True
             count_of_sells = 0
@@ -77,7 +103,10 @@ class ProfileManager:
                 if next_page_id:
                     html = await self._account._client.get_next_sells(next_page_id)
                 stage = "парсинга данных"
-                new_data = self._account._parser.parse_my_sells(html)
+                # Фильтр игр (карта подкатегорий) есть только на первой странице.
+                new_data = self._account._parser.parse_my_sells(html, subcategories=subcategories)
+                subcategories = new_data.get("subcategories") or subcategories
+                page_user_id = page_user_id or new_data.get("user-id")
                 next_page_id = new_data.get("next_page")
                 if not next_page_id:
                     next_stage = False
@@ -91,6 +120,9 @@ class ProfileManager:
                 await asyncio.sleep(3)
         except Exception as e:
             raise fpx_err.FpxGetUserSellsError(f"При выполнении {stage} произошла ошибка: {e}") from e
+        if page_user_id and not self._account.data.user_id:
+            self._account.data.user_id = page_user_id
+        my_user_id = self._account.data.user_id or page_user_id
         if limit > 0:
             counter += 1
         result: list[Order] = []
@@ -107,6 +139,8 @@ class ProfileManager:
                 category=i["category"],
                 amount=i["amount"],
                 topup_data=i.get("topup_data"),
+                buyer_id=i.get("client-id"),
+                **order_row_fields(i, my_user_id),
             )
             result.append(order)
             counter += 1
@@ -277,7 +311,7 @@ class ProfileManager:
         self,
         from_transaction_id: str | int | None = None,
         filter: str = "",
-        ) -> TransactionsPage:
+    ) -> TransactionsPage:
         """
         Одна страница истории транзакций.
 

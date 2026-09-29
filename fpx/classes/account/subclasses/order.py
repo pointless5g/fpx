@@ -1,8 +1,17 @@
-from typing import Any
+from collections.abc import Iterable
+from typing import Any, cast
 
-from fpx.models.account import Order
+from fpx.models.account import Order, OrderInfo
 from fpx.utils import errors as fpx_err
 from fpx.utils.order_status import is_refunded_status
+
+# Столько заказов FunPay отдаёт за один запрос к /api/orders/get (ограничение из FunPayAPI).
+MAX_ORDERS_PER_API_REQUEST = 10
+
+
+def _order_uid(order_id: str | int) -> str:
+    text = str(order_id).strip()
+    return text[1:] if text.startswith("#") else text
 
 
 class OrderManager:
@@ -43,6 +52,73 @@ class OrderManager:
         except Exception as e:
             raise fpx_err.FpxGetOrderInfoError(f"При выполнении {stage} произошла ошибка: {e}") from e
         return order
+
+    async def get_order(self, order_id: str | int, locale: str | None = None) -> OrderInfo:
+        """
+        Запрашивает заказ через JSON API FunPay (``POST /api/orders/get``), как ``FunPayAPI.Account.get_order``.
+
+        В отличие от ``get_order_details`` (HTML-страница ``/orders/{id}/``) отдаёт ID покупателя и продавца,
+        имя чата, подкатегорию, валюту, поля оплаченного лота и товары автовыдачи.
+
+        Args:
+            order_id (str | int): ID заказа (``#`` в начале можно оставить).
+            locale (str | None): ``ru`` / ``en`` / ``uk`` для заголовка ``Accept-Language``;
+                по умолчанию — язык клиента.
+        Returns:
+            OrderInfo: Объект с данными:
+                - order_id (str), status (OrderStatusKind): ID и статус
+                  (paid / closed / refunded / partially_refunded / unpaid).
+                - buyer_id, buyer_username, seller_id, seller_username: участники.
+                - chat_name (str): Имя чата ``users-<ID>-<ID>``.
+                - sum (float), currency (Currency): Сумма и валюта заказа.
+                - amount (int | float | None): Количество товара.
+                - subcategory_id, subcategory_type, subcategory_name: Подкатегория.
+                - fields (dict[str, OrderField]), short_description, full_description, lot_params:
+                  Поля оплаченного лота.
+                - player, server, side, order_secrets, review, locale.
+        Raises:
+            FpxGetOrderInfoError: Ошибка запроса или разбора; исходная причина — в ``__cause__``.
+        """
+        uid = _order_uid(order_id)
+        orders = await self.get_orders([uid], locale=locale)
+        # FunPayAPI берёт заказ по ключу data; на случай другого ключа — по order_uid самого заказа.
+        order = orders.get(uid) or next((info for info in orders.values() if info.order_id == uid), None)
+        if order is None:
+            raise fpx_err.FpxGetOrderInfoError(f"FunPay не вернул заказ #{uid}")
+        return order
+
+    async def get_orders(self, order_ids: Iterable[str | int], locale: str | None = None) -> dict[str, OrderInfo]:
+        """
+        Запрашивает до 10 заказов одним запросом к JSON API FunPay (``POST /api/orders/get``).
+
+        Args:
+            order_ids (Iterable[str | int]): От 1 до 10 ID заказов.
+            locale (str | None): ``ru`` / ``en`` / ``uk`` для заголовка ``Accept-Language``.
+        Returns:
+            dict[str, OrderInfo]: Найденные заказы по ID. Заказов, которых FunPay не вернул, в словаре нет.
+        Raises:
+            FpxAttributeError: Передано 0 или больше 10 ID.
+            FpxGetOrderInfoError: Ошибка запроса или разбора; исходная причина — в ``__cause__``.
+        """
+        uids = [_order_uid(order_id) for order_id in order_ids]
+        if not 1 <= len(uids) <= MAX_ORDERS_PER_API_REQUEST:
+            raise fpx_err.FpxAttributeError(
+                f"За один запрос можно получить от 1 до {MAX_ORDERS_PER_API_REQUEST} заказов, передано {len(uids)}"
+            )
+        stage = "запроса данных FunPay"
+        try:
+            response = await self._account._client.get_orders_api(uids, locale=locale)
+            stage = "проверки ответа FunPay"
+            # Как FunPayAPI.Account.method: 403 — сессия не принята, любой другой не-200 — сбой запроса.
+            if response.status_code == 403:
+                raise fpx_err.FpxAuthError("FunPay ответил 403 на запрос заказов: сессия не принята")
+            if response.status_code != 200:
+                raise fpx_err.FpxRequestError(f"FunPay ответил {response.status_code} на запрос заказов")
+            stage = "парсинга данных"
+            orders = self._account._parser.parse_orders_api(response.json(), locale=locale or "ru")
+        except Exception as e:
+            raise fpx_err.FpxGetOrderInfoError(f"При выполнении {stage} произошла ошибка: {e}") from e
+        return cast(dict[str, OrderInfo], orders)
 
     async def find_orders_by_buyer_name(
         self,

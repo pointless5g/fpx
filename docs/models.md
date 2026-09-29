@@ -51,6 +51,15 @@
 | `name` | `str` | Название товара |
 | `category` | `str` | Категория |
 | `review` | `dict` | Отзыв |
+| `buyer_id` | `int` | ID покупателя |
+| `currency` | `Currency` | Валюта цены |
+| `subcategory_id` | `int` | ID подкатегории |
+| `subcategory_type` | `str` | `lot` / `chip` |
+| `created_at` | `datetime` | Дата заказа по Москве |
+| `status_kind` | `OrderStatusKind` | `paid` / `closed` / `refunded` |
+| `chat_name` | `str` | Чат с покупателем `users-<ID>-<ID>` |
+
+Поля от `buyer_id` до `chat_name` необязательные (`None` по умолчанию), их заполняет `get_my_sells`.
 
 **Метод:** `await order.answer(answer_text: str)` — ответить в чат заказа. Поддерживает `{order_id}`, `{order_time}`, `{client_name}`, `{order_name}`.
 
@@ -76,9 +85,47 @@
 | `name` | `str` | Название товара |
 | `category` | `str` | Категория |
 | `review` | `dict` | Отзыв |
+| `seller_id` | `int` | ID продавца |
+
+И те же необязательные `currency`, `subcategory_id`, `subcategory_type`, `created_at`, `status_kind`,
+`chat_name` (чат с продавцом), что у `Order`; их заполняет `get_my_purchases`.
 
 **Метод:** `await purchase.answer(answer_text: str)` — ответить в чат покупки. Поддерживает `{order_id}`, `{order_time}`, `{client_name}`, `{order_name}`.
 В отличие от `Order`, метода `.refund()` у `Purchase` нет.
+
+---
+
+## OrderInfo
+
+Заказ из JSON API FunPay, возвращается `account.order.get_order()` / `get_orders()`.
+Имена как в FunPayAPI: `sum` — сумма заказа, `amount` — количество товара.
+
+| Поле | Тип | Описание |
+|------|-----|----------|
+| `order_id` | `str` | ID заказа |
+| `status` | `OrderStatusKind` | `paid` / `closed` / `refunded` / `partially_refunded` / `unpaid` |
+| `buyer_id`, `buyer_username` | `int`, `str` | Покупатель |
+| `seller_id`, `seller_username` | `int`, `str` | Продавец |
+| `chat_name` | `str` | Чат `users-<ID>-<ID>` |
+| `sum` | `float` | Сумма заказа |
+| `currency` | `Currency` | Валюта |
+| `amount` | `int \| float` | Количество товара |
+| `subcategory_id`, `subcategory_type` | `int`, `str` | Подкатегория (`lot` / `chip`) |
+| `subcategory_name` | `str` | Название подкатегории, если FunPay его прислал |
+| `player` | `str` | Имя персонажа (`character_name`) |
+| `server`, `side` | `OrderServer`, `OrderSide` | Сервер и сторона (`id`, `name`) |
+| `fields` | `dict[str, OrderField]` | Поля лота (`id`, `value`, `name`, `field_type_id`) |
+| `order_secrets` | `list[str]` | Товары автовыдачи FunPay |
+| `review` | `OrderReview` | Отзыв (`stars`, `text`, `reply`, `hidden`) или `None` |
+| `locale` | `str` | `ru` / `en` — язык значений полей по умолчанию |
+| `raw` | `dict` | Исходный объект заказа из ответа |
+
+Свойства: `short_description` (`title`), `full_description`, `payment_msg`, `lot_params`
+(список пар «название поля, значение»), `lot_params_text`, `lot_params_dict`. Методы:
+`get_field(key)`, `get_field_value(key, locale)`, `get_field_value_any(key)`.
+
+`Currency` (`fpx.utils.currency`) — строковый enum `RUB` / `USD` / `EUR` / `UNKNOWN`
+(`Currency.RUB == "RUB"`, знак — `Currency.RUB.symbol`). `OrderStatusKind` — `fpx.utils.order_status`.
 
 ---
 

@@ -1,10 +1,14 @@
 import asyncio
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from typing import Any
 
 from fpx.classes.account.subclasses.order import OrderManager
+from fpx.classes.account.subclasses.profile import order_row_fields
 from fpx.models.account import Order, Purchase
 from fpx.utils import errors as fpx_err
+
+# Поля, которые принимает Purchase: у Order есть свои (buyer_id), которых у покупки нет.
+_PURCHASE_INIT_FIELDS = frozenset(f.name for f in fields(Purchase) if f.init)
 
 
 class PurchaseManager:
@@ -30,8 +34,7 @@ class PurchaseManager:
         try:
             order_manager = OrderManager(self._account)
             order: Order = await order_manager.get_order_details(order_id)
-            order_args = asdict(order)
-            order_args.pop("_client")
+            order_args = {key: value for key, value in asdict(order).items() if key in _PURCHASE_INIT_FIELDS}
             purchase = Purchase(**order_args)
         except Exception as e:
             raise fpx_err.FpxGetPurchaseInfoError(str(e)) from e
@@ -54,10 +57,18 @@ class PurchaseManager:
                 - status (str): Статус заказа.
                 - name (str): Название заказа.
                 - category (str): Категория заказа.
+                - seller_id (int | None): ID продавца.
+                - currency (Currency | None): Валюта цены.
+                - subcategory_id (int | None), subcategory_type (str | None): Подкатегория (``lot``/``chip``).
+                - created_at (datetime | None): Дата покупки по Москве.
+                - status_kind (OrderStatusKind): Статус независимо от языка аккаунта.
+                - chat_name (str | None): Имя чата с продавцом ``users-<ID>-<ID>``.
         Raises:
             FpxGetUserPurchasesError: Ошибка запроса покупок
         """
         counter = 0
+        subcategories: dict[str, tuple[str, int]] | None = None
+        page_user_id: str | None = None
         try:
             next_stage = True
             count_of_sells = 0
@@ -69,7 +80,10 @@ class PurchaseManager:
                 if next_page_id:
                     html = await self._account._client.get_next_purchases(next_page_id)
                 stage = "парсинга данных"
-                new_data = self._account._parser.parse_my_sells(html)
+                # Фильтр игр (карта подкатегорий) есть только на первой странице.
+                new_data = self._account._parser.parse_my_sells(html, subcategories=subcategories)
+                subcategories = new_data.get("subcategories") or subcategories
+                page_user_id = page_user_id or new_data.get("user-id")
                 for i in new_data["sells"]:
                     data.append(i)
                 count_of_sells += len(new_data["sells"])
@@ -83,6 +97,9 @@ class PurchaseManager:
                 await asyncio.sleep(3)
         except Exception as e:
             raise fpx_err.FpxGetUserPurchasesError(f"При выполнении {stage} произошла ошибка: {e}") from e
+        if page_user_id and not self._account.data.user_id:
+            self._account.data.user_id = page_user_id
+        my_user_id = self._account.data.user_id or page_user_id
         if limit > 0:
             counter += 1
         result: list[Order] = []
@@ -99,6 +116,8 @@ class PurchaseManager:
                 category=i["category"],
                 amount=i["amount"],
                 topup_data=i.get("topup_data"),
+                seller_id=i.get("client-id"),
+                **order_row_fields(i, my_user_id),
             )
             result.append(order)
             counter += 1

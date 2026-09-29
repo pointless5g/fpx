@@ -9,6 +9,10 @@ from fpx.utils.order_status import OrderStatusKind, classify_order_status
 
 logger = logging.getLogger("fpx.order_runner")
 
+# Заказы из таблицы продаж не пропадают. Пустая таблица после непустой — сбой FunPay, а не «продаж нет»:
+# если принять её, следующая нормальная страница покажет все заказы новыми и хендлеры сработают повторно.
+_EMPTY_SALES_TABLE = "Таблица продаж пришла пустой, хотя заказы в ней уже были; кеш не тронут"
+
 
 class OrderRunner:
     def __init__(self, runner: Any) -> None:
@@ -21,6 +25,8 @@ class OrderRunner:
         Обновляет кеш заказов в раннере
         """
         orders = await self.runner._account.profile.get_my_sells(100)
+        if not orders and self.runner._cache["orders"]:
+            raise fpx_err.FpxGetUserSellsError(_EMPTY_SALES_TABLE)
         result = []
         for order in orders:
             o = {
@@ -47,6 +53,8 @@ class OrderRunner:
             sells = self.runner._account._parser.parse_my_sells(html)["sells"]
         except Exception as e:
             raise fpx_err.FpxGetUserSellsError(f"Не удалось загрузить первую страницу продаж: {e}") from e
+        if not sells and self.runner._cache["orders"]:
+            raise fpx_err.FpxGetUserSellsError(_EMPTY_SALES_TABLE)
         self.runner._cache["old_orders"] = self.runner._cache["orders"]
         self.runner._cache["orders"] = [
             {

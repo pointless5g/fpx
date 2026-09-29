@@ -559,6 +559,36 @@ Raises:
     FpxGetOrderInfoError: Ошибка запроса данных заказа
 ```
 
+### `OrderManager.get_order`
+
+```
+Запрашивает заказ через JSON API FunPay (POST /api/orders/get), как FunPayAPI.Account.get_order.
+
+Args:
+    order_id (str | int): ID заказа (# в начале можно оставить).
+    locale (str | None): ru / en / uk для заголовка Accept-Language.
+Returns:
+    OrderInfo: статус, покупатель и продавец, имя чата, сумма и валюта, количество,
+        подкатегория, поля лота, товары автовыдачи, отзыв.
+Raises:
+    FpxGetOrderInfoError: Ошибка запроса или разбора; исходная причина — в __cause__.
+```
+
+### `OrderManager.get_orders`
+
+```
+Запрашивает до 10 заказов одним запросом к JSON API FunPay (POST /api/orders/get).
+
+Args:
+    order_ids (Iterable[str | int]): От 1 до 10 ID заказов.
+    locale (str | None): ru / en / uk для заголовка Accept-Language.
+Returns:
+    dict[str, OrderInfo]: Найденные заказы по ID.
+Raises:
+    FpxAttributeError: Передано 0 или больше 10 ID.
+    FpxGetOrderInfoError: Ошибка запроса или разбора; исходная причина — в __cause__.
+```
+
 ### `OrderManager.find_orders_by_buyer_name`
 
 ```
@@ -742,6 +772,7 @@ Returns:
         - status (str): Статус заказа.  
         - name (str): Название заказа.  
         - category (str): Категория заказа.   
+        - buyer_id, currency, subcategory_id, subcategory_type, created_at, status_kind, chat_name.
 Raises:
     FpxGetUserSellsError: Ошибка запроса продаж
 ```
@@ -946,7 +977,8 @@ https://funpay.com/lots/offerEdit?node=...&offer=...
 ### `ProfileParser.parse_my_sells`
 
 ```
-Парсит https://funpay.com/orders/trade
+Парсит таблицу заказов: продажи https://funpay.com/orders/trade и покупки https://funpay.com/orders/.
+Пустая таблица — пустой список sells.
 ```
 
 ### `ProfileParser.parse_profile`

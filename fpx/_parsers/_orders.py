@@ -5,11 +5,23 @@ from typing import Any
 
 from bs4 import BeautifulSoup, Tag
 
+from fpx.models.account import OrderField, OrderInfo, OrderReview, OrderServer, OrderSide
 from fpx.utils import errors as fpx_err
+from fpx.utils.currency import Currency, parse_currency
+from fpx.utils.order_status import OrderStatusKind
 
 from ._base import BaseParser
 
 logger = logging.getLogger("fpx.order_parser")
+
+# Статусы JSON API заказов → OrderStatusKind (как словарь в FunPayAPI.Account.__parse_order).
+_API_ORDER_STATUSES = {
+    "unpaid": OrderStatusKind.UNPAID,
+    "paid": OrderStatusKind.PAID,
+    "closed": OrderStatusKind.CLOSED,
+    "refunded": OrderStatusKind.REFUNDED,
+    "partially_refunded": OrderStatusKind.PARTIALLY_REFUNDED,
+}
 
 
 class OrderParser(BaseParser):
@@ -158,3 +170,114 @@ class OrderParser(BaseParser):
                         logger.debug("При парсинге конкретного лота в категории что-то пошло не так")
                         continue
         return list(lowcoasters.values())
+
+    @classmethod
+    def parse_orders_api(cls, payload: Any, locale: str = "ru") -> dict[str, OrderInfo]:
+        """
+        Разбирает ответ ``POST https://funpay.com/api/orders/get``.
+
+        Перенос ``FunPayAPI.Account.get_orders_by_ids`` + ``__parse_order``: ответ без
+        ``"status": "SUCCESS"`` или без ``data`` — ошибка, каждый заказ из ``data`` → ``OrderInfo``.
+
+        Args:
+            payload: JSON ответа.
+            locale: Язык запроса (``Accept-Language``), от него зависит язык полей по умолчанию.
+        Returns:
+            dict[str, OrderInfo]: заказы по ID в том виде, в каком их вернул FunPay.
+        Raises:
+            FpxParseError: FunPay ответил ошибкой или заказ не удалось разобрать.
+        """
+        if not isinstance(payload, dict):
+            raise fpx_err.FpxParseError(f"API заказов вернуло не JSON-объект: {type(payload).__name__}")
+        data = payload.get("data")
+        if payload.get("status") != "SUCCESS" or data is None:
+            raise fpx_err.FpxParseError(f"API заказов вернуло ошибку: {cls._describe_api_error(payload)}")
+        if isinstance(data, list) and not data:
+            # PHP отдаёт пустой словарь как [] — FunPay не нашёл ни одного заказа.
+            return {}
+        if not isinstance(data, dict):
+            raise fpx_err.FpxParseError(f"API заказов вернуло data неожиданного типа: {type(data).__name__}")
+        return {str(order_id): cls.parse_order_api_item(item, locale) for order_id, item in data.items()}
+
+    @classmethod
+    def parse_order_api_item(cls, order_data: Any, locale: str = "ru") -> OrderInfo:
+        """Один заказ из ``data`` ответа ``/api/orders/get`` (``FunPayAPI.Account.__parse_order``)."""
+        try:
+            status_raw = order_data["status"]
+            status = _API_ORDER_STATUSES.get(status_raw)
+            if status is None:
+                raise fpx_err.FpxParseError(f"Неизвестный статус заказа в API: {status_raw!r}")
+            section = order_data["section"]
+            buyer = order_data["buyer"]
+            seller = order_data["seller"]
+            type_data = order_data.get("type_data") or {}
+            server = type_data.get("server")
+            side = type_data.get("side")
+            raw_fields = type_data.get("fields")
+            review_data = order_data.get("review")
+            review = None
+            if isinstance(review_data, dict):
+                text, rating, reply = review_data.get("text"), review_data.get("rating"), review_data.get("reply")
+                # Пустой объект отзыва FunPay шлёт и для заказов без отзыва.
+                if text or rating or reply:
+                    review = OrderReview(
+                        stars=int(rating) if rating else None,
+                        text=text,
+                        reply=reply,
+                        hidden=bool(review_data.get("hidden")),
+                    )
+            order_id = str(order_data["order_uid"])
+            return OrderInfo(
+                order_id=order_id[1:] if order_id.startswith("#") else order_id,
+                status=status,
+                buyer_id=int(buyer["user_id"]),
+                seller_id=int(seller["user_id"]),
+                chat_name=str(order_data["chat"]["node_name"]),
+                sum=float(order_data["amount"]),
+                currency=parse_currency(str(order_data["currency"])) or Currency.UNKNOWN,
+                subcategory_id=int(section["local_id"]),
+                subcategory_type=str(section["type_id"]),
+                subcategory_name=section.get("name"),
+                buyer_username=buyer.get("name"),
+                seller_username=seller.get("name"),
+                amount=cls._api_quantity(type_data.get("amount")),
+                player=type_data.get("player") or None,
+                server=OrderServer(int(server["server_id"]), server.get("name")) if server else None,
+                side=OrderSide(int(side["side_id"]), side.get("name")) if side else None,
+                fields={
+                    str(key): OrderField(
+                        id=str(key),
+                        value=value.get("value"),
+                        name=value.get("name"),
+                        field_type_id=value.get("field_type_id"),
+                    )
+                    for key, value in (raw_fields.items() if isinstance(raw_fields, dict) else ())
+                },
+                order_secrets=[
+                    str(secret["value"]) if isinstance(secret, dict) else str(secret)
+                    for secret in (type_data.get("secrets") or [])
+                ],
+                review=review,
+                locale="en" if locale == "en" else "ru",
+                raw=order_data,
+            )
+        except fpx_err.FpxParseError:
+            raise
+        except (KeyError, TypeError, ValueError, AttributeError) as e:
+            raise fpx_err.FpxParseError(f"Не удалось разобрать заказ из API: {e!r}") from e
+
+    @staticmethod
+    def _api_quantity(raw: Any) -> int | float | None:
+        """Количество из ``type_data.amount``: ``"2.0"`` → 2, ``"0.5"`` → 0.5, пусто → None."""
+        if not raw:
+            return None
+        quantity = float(raw)
+        return int(quantity) if quantity.is_integer() else quantity
+
+    @staticmethod
+    def _describe_api_error(payload: dict[str, Any]) -> str:
+        details = [f"status={payload.get('status')!r}"]
+        for key in ("error", "message", "msg"):
+            if payload.get(key):
+                details.append(f"{key}={payload[key]!r}")
+        return ", ".join(details)

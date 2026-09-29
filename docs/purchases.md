@@ -70,7 +70,7 @@ async def refunded(order: types.Purchase):
 
 ## Объект Purchase
 
-Поля полностью совпадают с [`Order`](orders.md#объект-order):
+Поля совпадают с [`Order`](orders.md#объект-order), кроме ID собеседника:
 
 | Поле | Тип | Описание |
 |------|-----|----------|
@@ -85,6 +85,10 @@ async def refunded(order: types.Purchase):
 | `name` | `str` | Название товара |
 | `category` | `str` | Категория |
 | `review` | `dict` | Отзыв (если есть) |
+| `seller_id` | `int \| None` | ID продавца |
+| `currency`, `subcategory_id`, `subcategory_type`, `created_at`, `status_kind`, `chat_name` | | Как у [`Order`](orders.md#объект-order), `chat_name` — чат с продавцом |
+
+Вместо `buyer_id` у покупки `seller_id`. Эти поля заполняет `get_my_purchases`.
 
 ### Методы
 
@@ -111,6 +115,8 @@ purchases = await fp.account.purchase.get_my_purchases(50)
 for p in purchases:
     print(p.order_id, p.status)
 ```
+
+Без покупок — пустой список, а не ошибка.
 
 ### `await fp.account.purchase.get_purchase_details(order_id)`
 

@@ -30,6 +30,11 @@ for order in orders:
 
 `limit=0` — вернёт все заказы. Возвращает `list[Order]`.
 
+Кроме текстовых полей у каждой продажи есть `buyer_id`, `currency`, `subcategory_id` / `subcategory_type`,
+`created_at` (дата по Москве), `status_kind` (статус по классу строки, не зависит от языка) и `chat_name`
+(`users-<ID>-<ID>`, ваш ID берётся из `account.data.user_id` или со страницы продаж). Подробнее —
+[Объект Order](orders.md#объект-order). У продавца без продаж — пустой список, а не ошибка.
+
 ### `await fp.account.profile.profile(user_id=None)`
 
 Данные профиля. Если `user_id` не передан — берёт свой.

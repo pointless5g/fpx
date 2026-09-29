@@ -295,6 +295,18 @@ class FpxNullDataError(FpxParseError):
         super().__init__(message)
 
 
+class FpxUnauthorizedError(FpxAuthError, FpxGetUserDataError, FpxNullDataError):
+    """
+    FunPay не узнаёт аккаунт: golden_key отозван или сессия слетела.
+
+    Наследник FpxAuthError, FpxGetUserDataError и FpxNullDataError: прежние except,
+    которые ловили пустую главную страницу, продолжают работать.
+    """
+
+    def __init__(self, message: str = "FunPay не узнаёт аккаунт: обновите golden_key") -> None:
+        super().__init__(message)
+
+
 # --- Ошибки раннера ---
 class FpxCriticalRunnerError(FpxRunnerError):
     """Критический сбой раннера, требующий остановки или жесткого перезапуска."""

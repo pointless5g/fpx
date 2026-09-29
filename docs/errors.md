@@ -10,6 +10,7 @@
 FpxError
 ├── FpxAccountError
 │   ├── FpxAuthError
+│   │   └── FpxUnauthorizedError
 │   ├── FpxGetChatsError
 │   ├── FpxGetUpdatesError
 │   ├── FpxMessageDeliverError
@@ -61,7 +62,8 @@ FpxError
 | Класс | Когда кидается |
 |-------|----------------|
 | `FpxError` | Базовая ошибка, ловит всё |
-| `FpxAuthError` | Передан неверный `golden_key` |
+| `FpxAuthError` | Передан неверный `golden_key` или FunPay ответил 403 |
+| `FpxUnauthorizedError` | На главной странице нет блока пользователя: ключ отозван или сессия слетела |
 | `FpxGetChatsError` | Не удалось запросить список чатов |
 | `FpxGetUpdatesError` | Не удалось получить обновления через `/runner/` (ответ не пришёл или не разобрался) |
 | `FpxMessageDeliverError` | Сообщение не отправилось |

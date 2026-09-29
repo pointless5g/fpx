@@ -117,6 +117,8 @@ class RequestEngine:
                     continue
                 if response.url == "https://funpay.com/account/login":
                     raise fpx_err.FpxAuthError("Неверный gkey, обнови свои куки.")
+                if response.status_code == 403:
+                    raise fpx_err.FpxAuthError(f"FunPay ответил 403 на {method} {url}: доступ закрыт")
                 return response
             except httpx.ReadTimeout as e:
                 if write:

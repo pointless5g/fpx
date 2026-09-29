@@ -217,6 +217,10 @@ class ProfileParser(BaseParser):
         """Парсит funpay.com"""
         soup = BeautifulSoup(html_content, "html.parser")
         user_link = soup.find("a", class_="user-link-dropdown")
+        if not user_link and not soup.find("div", class_="user-link-name"):
+            # Без блока пользователя FunPay показывает страницу гостю: ссылки на чужие
+            # профили на ней есть, но это не мы.
+            raise fpx_err.FpxUnauthorizedError("На главной странице нет блока пользователя: FunPay не узнаёт аккаунт")
         if not user_link:
             user_link = soup.find("a", href=lambda h: h and "/users/" in h)
         result: dict[str, Any] = {}

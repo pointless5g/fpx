@@ -397,3 +397,18 @@ class TestUpdateNoticeChannel:
         account._client.update_notice_channel.side_effect = Exception("api error")
         with pytest.raises(fpx_err.FpxPostProfileError):
             await manager.update_notice_channel("push", True)
+
+
+class TestUnauthorized:
+    @pytest.mark.asyncio
+    async def test_a_revoked_key_is_reported_as_such(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        from fpx._parsers import FpxParser
+        from fpx.classes.account.subclasses.profile import ProfileManager
+
+        account = MagicMock()
+        account._parser = FpxParser()
+        account._client.get_main_menu = AsyncMock(return_value="<html><body>Войти</body></html>")
+        with pytest.raises(fpx_err.FpxUnauthorizedError):
+            await ProfileManager(account).get_user_data()

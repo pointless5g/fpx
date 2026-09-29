@@ -41,6 +41,8 @@ class ProfileManager:
             self._account.data.user_id = data["user-id"]
             self._account.data._csrf_token = data["csrf-token"]
             user_data = UserData(csrf_token=data["csrf-token"], user_id=data["user-id"])
+        except fpx_err.FpxAuthError:
+            raise
         except Exception as e:
             raise fpx_err.FpxGetUserDataError(f"При выполнении {stage} произошла ошибка: {e}") from e
         return user_data
@@ -277,7 +279,7 @@ class ProfileManager:
         self,
         from_transaction_id: str | int | None = None,
         filter: str = "",
-        ) -> TransactionsPage:
+    ) -> TransactionsPage:
         """
         Одна страница истории транзакций.
 

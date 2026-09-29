@@ -183,6 +183,8 @@ class Router:
         ignore_chat_id: str | int | list[str | int] | None = None,
         ignore_sender: str | list[str] | None = None,
         priority: int = 0,
+        own: bool = False,
+        system: bool = False,
     ) -> Decorator:
         r"""Декоратор отслеживает новые сообщения.
         Важно что если сделать несколько хендлеров с одинаковыми фильтрами, то подходящее
@@ -208,6 +210,10 @@ class Router:
                 Айдишники отсюда скрипт будет просто игнорить (одиночный ID или список).
             - ignore_sender (str | list | None): Черный список для юзеров. Скрипт проигнорит сообщения от них.
             - priority (int | None): Приоритет декоратора, чем выше тем раньше проверяется (12 проверит раньше чем 11)
+            - own (bool): Получать и свои сообщения - отправленные ботом или продавцом из браузера.
+                Команды и mapping на них не срабатывают.
+            - system (bool): Получать и оповещения FunPay (оплата, подтверждение, возврат, отзыв);
+                тип оповещения - в message.type, номер заказа - в message.order_id.
 
         Returns:
             Message: Объект, содержащий:
@@ -231,6 +237,8 @@ class Router:
                     "ignore_chat_id": ignore_chat_id,
                     "ignore_sender": ignore_sender,
                     "priority": priority,
+                    "own": own,
+                    "system": system,
                 }
             )
             self._handlers["message"].sort(key=lambda h: h["priority"], reverse=True)

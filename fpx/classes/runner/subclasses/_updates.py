@@ -25,6 +25,13 @@ POSITIONS_KEY = "fpx:updates"
 _STATUS_SOURCES = {"orders": "orders", "purchases": "purchases"}
 
 
+def _interlocutor(node_name: str | None, my_id: Any) -> int | None:
+    """Собеседник личного чата: второй ID из имени users-<ID>-<ID>."""
+    ids = [int(part) for part in (node_name or "").split("-")[1:] if part.isdigit()]
+    others = [user_id for user_id in ids if str(user_id) != str(my_id)]
+    return others[0] if len(others) == 1 else None
+
+
 def _new_tag() -> str:
     """Случайный тег: FunPay пришлёт объект целиком, как клиенту без кеша."""
     return secrets.token_hex(4)
@@ -304,7 +311,7 @@ class UpdatesRunner:
         for part in (node_name or "").split("-")[1:]:
             if part.isdigit() and int(part) != my_id:
                 names[int(part)] = chat.username
-        messages = self.runner._account._parser.parse_runner_messages(data.get("messages") or [], names)
+        messages = self.runner._account._parser.parse_runner_messages(data.get("messages") or [], names, my_id)
         messages.sort(key=lambda message: message["node_id"])
         threshold = self._threshold(chat.id)
         new = [message for message in messages if message["node_id"] > threshold]
@@ -329,16 +336,29 @@ class UpdatesRunner:
                 last_id = chat.node_msg_id
                 self._forget(chat.id)
         self.runner._chat._chat_last_ids[chat.id] = str(last_id)
+        interlocutor_id = _interlocutor(item.node_name, self.runner._account.data.user_id)
         for raw in item.new:
-            # Оповещения FunPay (оплата, отзыв, возврат) приходят через хендлеры заказов и отзывов.
-            if raw["is_system"]:
-                continue
+            # Оповещения FunPay и свои сообщения получают только хендлеры с system=True и own=True;
+            # оплата, отзыв и возврат приходят ещё и через хендлеры заказов и отзывов.
             message = Message(
                 node_msg_id=raw["node_id"],
                 sender=raw["sender"],
                 chat_id=chat.id,
                 text=raw["message"],
-                is_system=False,
+                is_system=raw["is_system"],
+                author_id=raw["author_id"],
+                chat_name=item.node_name,
+                interlocutor_id=interlocutor_id,
+                is_own=raw["is_own"],
+                by_bot=raw["by_bot"],
+                image_link=raw["image_link"],
+                image_name=raw["image_name"],
+                badge=raw["badge"],
+                is_employee=raw["is_employee"],
+                is_autoreply=raw["is_autoreply"],
+                type=raw["type"],
+                order_id=raw["order_id"],
+                html=raw["html"],
             )
             message._client = self.runner
             try:

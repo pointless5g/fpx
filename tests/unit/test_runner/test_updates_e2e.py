@@ -68,7 +68,9 @@ class FakeFunPay:
         chat = self.chats[node]
         self.notify(
             f'Покупатель <a href="https://funpay.com/users/{chat["buyer_id"]}/">{chat["buyer"]}</a> оплатил '
-            f'<a href="https://funpay.com/orders/{order_id}/">заказ #{order_id}</a>.',
+            f'<a href="https://funpay.com/orders/{order_id}/">заказ #{order_id}</a>. Roblox, 1000 робуксов. '
+            f'<a href="https://funpay.com/users/{chat["buyer_id"]}/">{chat["buyer"]}</a>, '
+            "не забудьте потом нажать кнопку «Подтвердить выполнение заказа».",
             node,
         )
 
@@ -560,3 +562,53 @@ def test_many_changed_chats_are_loaded_in_batches_of_ten(site: FakeFunPay) -> No
     run(fp, scenario)
     assert sorted(seen) == sorted(f"from {node}" for node in range(1000, 1012))
     assert [len(call) for call in site.runner_calls] == [2, 10, 2]
+
+
+def test_own_messages_and_notices_reach_handlers_that_ask_for_them(site: FakeFunPay) -> None:
+    fp = make_tools(site)
+    everything: list[tuple[str, str, bool, bool]] = []
+    buyers_only: list[str] = []
+
+    @fp.router.on_message(own=True, system=True, priority=1)
+    async def on_everything(message: types.Message) -> None:
+        everything.append((message.sender, message.type.value, message.is_own, message.is_system))
+
+    @fp.router.on_message()
+    async def on_buyer(message: types.Message) -> None:
+        buyers_only.append(message.text)
+
+    async def scenario() -> None:
+        await tick(fp)
+        site.pay("PAID0001")
+        site.say("Оплатил")
+        site.say("Сейчас выдам", author=SHOP_ID)  # продавец ответил из браузера
+        await tick(fp)
+
+    run(fp, scenario)
+    assert everything == [
+        ("FunPay", "order_purchased", False, True),
+        ("buyer1", "non_system", False, False),
+        ("shop", "non_system", True, False),
+    ]
+    assert buyers_only == []  # первым подходит хендлер с большим приоритетом
+
+
+def test_a_message_carries_its_chat_and_author(site: FakeFunPay) -> None:
+    fp = make_tools(site)
+    seen: list[types.Message] = []
+
+    @fp.router.on_message(system=True)
+    async def on_message(message: types.Message) -> None:
+        seen.append(message)
+
+    async def scenario() -> None:
+        await tick(fp)
+        site.pay("PAID0002")
+        site.say("логин")
+        await tick(fp)
+
+    run(fp, scenario)
+    notice, line = seen
+    assert (notice.type, notice.order_id, notice.author_id) == (types.MessageType.ORDER_PURCHASED, "PAID0002", 0)
+    assert (line.author_id, line.chat_name, line.interlocutor_id) == (BUYER_ID, f"users-{SHOP_ID}-{BUYER_ID}", BUYER_ID)
+    assert str(line.chat_id) == str(NODE)

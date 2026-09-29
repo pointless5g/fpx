@@ -14,6 +14,20 @@
 | `chat_id` | `str` | ID чата (node) |
 | `text` | `str` | Текст сообщения |
 | `is_system` | `bool` | Системное ли сообщение |
+| `author_id` | `int \| None` | ID автора на FunPay, `0` — оповещение FunPay |
+| `chat_name` | `str \| None` | Имя переписки `users-<ID>-<ID>` |
+| `interlocutor_id` | `int \| None` | ID собеседника в личном чате |
+| `is_own` | `bool` | Сообщение с этого аккаунта (бот или продавец из браузера) |
+| `by_bot` | `bool` | Текст начинался с метки бота (U+2061), метка снята |
+| `image_link`, `image_name` | `str \| None` | Картинка: ссылка и имя файла |
+| `badge` | `str \| None` | Метка автора: «поддержка», «арбитраж», «модерация» или «автоответ» |
+| `is_employee` | `bool` | Автор — сотрудник FunPay (зелёная метка) |
+| `is_autoreply` | `bool` | Автоответ FunPay (серая метка) |
+| `type` | `MessageType` | Тип оповещения FunPay: оплата, подтверждение, возврат, отзыв… (`NON_SYSTEM` у обычных) |
+| `order_id` | `str \| None` | Номер заказа из оповещения |
+| `html` | `str \| None` | Разметка сообщения, как её прислал FunPay |
+
+Поля после `is_system` заполняются при приёме событий через `/runner/`.
 
 **Метод:** `await message.answer(answer_text: str)` — ответить в чат. Поддерживает `{sender}`, `{chat_id}`, `{text}`.
 

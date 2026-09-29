@@ -7,6 +7,7 @@ import pytest
 from fpx._parsers._chats import ChatParser
 from fpx.models.chat import Chat
 from fpx.utils import errors as fpx_err
+from fpx.utils.message_types import MessageType, classify_notice
 
 
 class TestChatParser:
@@ -251,3 +252,158 @@ class TestChatParser:
         with pytest.raises(fpx_err.FpxParseError) as exc:
             ChatParser.parse_chat(html)
         assert isinstance(exc.value.__cause__, json.JSONDecodeError)
+
+
+# -- сообщения chat_node: автор, метки, картинки, метка бота, оповещения
+
+
+def _message_html(msg_id, text, head=None, label=None):
+    """Разметка сообщения chat_node; head - ник автора (шапка серии), label - (класс метки, текст)."""
+    label_html = f'<span class="chat-msg-author-label label {label[0]}">{label[1]}</span>' if label else ""
+    head_html = (
+        f'<div class="media-user-name"><a class="chat-msg-author-link" href="https://funpay.com/users/1/">{head}</a>'
+        f"{label_html}</div>"
+        if head
+        else ""
+    )
+    classes = "chat-msg-item chat-msg-with-head" if head else "chat-msg-item"
+    return (
+        f'<div class="{classes}" id="message-{msg_id}"><div class="chat-message">{head_html}'
+        f'<div class="chat-msg-body"><div class="chat-msg-text">{text}</div></div></div></div>'
+    )
+
+
+def _notice_html(msg_id, text):
+    return (
+        f'<div class="chat-msg-item chat-msg-with-head" id="message-{msg_id}"><div class="chat-message">'
+        '<div class="media-user-name">FunPay <span class="chat-msg-author-label label label-primary">оповещение</span>'
+        '</div><div class="chat-msg-body"><div class="alert alert-with-icon alert-info" role="alert">'
+        f'<i class="fas fa-info-circle alert-icon"></i><div class="chat-msg-text">{text}</div></div></div></div></div>'
+    )
+
+
+class TestRunnerMessageDetails:
+    def test_a_payment_notice_names_its_type_and_order(self):
+        text = (
+            'Покупатель <a href="https://funpay.com/users/2000/">Buyer</a> оплатил\n'
+            '<a href="https://funpay.com/orders/ABCD1234/">заказ #ABCD1234</a>. Roblox, 80 робуксов.\n'
+            '<a href="https://funpay.com/users/2000/">Buyer</a>, не забудьте потом нажать кнопку '
+            "«Подтвердить выполнение заказа»."
+        )
+        (message,) = ChatParser.parse_runner_messages([{"id": 1, "author": 0, "html": _notice_html(1, text)}], {})
+        assert (message["is_system"], message["type"], message["order_id"]) == (
+            True,
+            MessageType.ORDER_PURCHASED,
+            "ABCD1234",
+        )
+        assert message["sender"] == "FunPay"
+        assert message["message"].startswith("Покупатель Buyer оплатил")
+
+    def test_a_buyer_who_writes_like_a_notice_is_still_a_buyer(self):
+        html = _message_html(2, "Покупатель Buyer оплатил заказ #ABCD1234.", head="Buyer")
+        (message,) = ChatParser.parse_runner_messages([{"id": 2, "author": 2000, "html": html}], {})
+        assert (message["is_system"], message["type"], message["order_id"]) == (False, MessageType.NON_SYSTEM, None)
+
+    def test_a_staff_label_marks_every_message_of_its_author(self):
+        messages = ChatParser.parse_runner_messages(
+            [
+                {
+                    "id": 3,
+                    "author": 7,
+                    "html": _message_html(3, "Здравствуйте", head="Arbiter", label=("label-success", "арбитраж")),
+                },
+                {"id": 4, "author": 7, "html": _message_html(4, "Жду ответа продавца")},
+                {"id": 5, "author": 2000, "html": _message_html(5, "Я покупатель", head="Buyer")},
+            ],
+            {},
+        )
+        assert [(m["sender"], m["badge"], m["is_employee"]) for m in messages] == [
+            ("Arbiter", "арбитраж", True),
+            ("Arbiter", "арбитраж", True),
+            ("Buyer", None, False),
+        ]
+
+    def test_an_autoreply_is_not_staff(self):
+        html = _message_html(6, "Скоро отвечу", head="Shop", label=("label-default", "автоответ"))
+        (message,) = ChatParser.parse_runner_messages([{"id": 6, "author": 1000, "html": html}], {}, my_id=1000)
+        assert (message["is_autoreply"], message["is_employee"], message["badge"], message["is_own"]) == (
+            True,
+            False,
+            "автоответ",
+            True,
+        )
+
+    def test_a_picture_keeps_its_link_and_name(self):
+        html = (
+            '<div class="chat-msg-item" id="message-8"><div class="chat-message"><div class="chat-msg-body">'
+            '<div class="chat-msg-text"><a class="chat-img-link" href="https://sfunpay.com/s/chat/ab/cd.jpg">'
+            '<img src="https://sfunpay.com/s/chat/ab/cd200x200.jpg" alt="screenshot.png"></a></div></div></div></div>'
+        )
+        (message,) = ChatParser.parse_runner_messages([{"id": 8, "author": 2000, "html": html}], {})
+        assert (message["image_link"], message["image_name"], message["by_bot"]) == (
+            "https://sfunpay.com/s/chat/ab/cd.jpg",
+            "screenshot.png",
+            False,
+        )
+        assert message["message"] == "https://sfunpay.com/s/chat/ab/cd.jpg"
+
+    def test_the_bot_mark_is_taken_off_the_text(self):
+        messages = ChatParser.parse_runner_messages(
+            [
+                {"id": 9, "author": 1000, "html": _message_html(9, "⁡Готово!", head="Shop")},
+                {"id": 10, "author": 1000, "html": _message_html(10, "⁤Старая метка")},
+                {"id": 11, "author": 2000, "html": _message_html(11, "⁤не наша метка", head="Buyer")},
+            ],
+            {},
+            my_id=1000,
+        )
+        assert [(m["message"], m["by_bot"], m["is_own"]) for m in messages] == [
+            ("Готово!", True, True),
+            ("Старая метка", True, True),
+            ("⁤не наша метка", False, False),
+        ]
+
+    def test_line_breaks_stay_and_invisible_tails_go(self):
+        html = _message_html(12, "логин<br>пароль ​⁣ ", head="Buyer")
+        (message,) = ChatParser.parse_runner_messages([{"id": 12, "author": 2000, "html": html}], {})
+        assert message["message"] == "логин\nпароль"
+        assert message["html"] == html
+
+
+class TestClassifyNotice:
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            (
+                "Покупатель Buyer подтвердил успешное выполнение заказа #ABCD1234 и отправил деньги продавцу Shop.",
+                MessageType.ORDER_CONFIRMED,
+            ),
+            (
+                "The buyer Buyer has confirmed that order #ABCD1234 has been fulfilled successfully"
+                " and that the seller Shop has been paid.",
+                MessageType.ORDER_CONFIRMED,
+            ),
+            (
+                "Администратор Admin подтвердил успешное выполнение заказа #ABCD1234 и отправил деньги продавцу Shop.",
+                MessageType.ORDER_CONFIRMED_BY_ADMIN,
+            ),
+            ("Продавец Shop вернул деньги покупателю Buyer по заказу #ABCD1234.", MessageType.REFUND),
+            ("Администратор Admin вернул деньги покупателю Buyer по заказу #ABCD1234.", MessageType.REFUND_BY_ADMIN),
+            ("Часть средств по заказу #ABCD1234 возвращена покупателю.", MessageType.PARTIAL_REFUND),
+            ("Заказ #ABCD1234 открыт повторно.", MessageType.ORDER_REOPENED),
+            ("Покупатель Buyer написал отзыв к заказу #ABCD1234.", MessageType.NEW_FEEDBACK),
+            ("Продавец Shop ответил на отзыв к заказу #ABCD1234.", MessageType.NEW_FEEDBACK_ANSWER),
+            ("Покупатель Buyer изменил отзыв к заказу #ABCD1234.", MessageType.FEEDBACK_CHANGED),
+            ("Покупатель Buyer удалил отзыв к заказу #ABCD1234.", MessageType.FEEDBACK_DELETED),
+        ],
+    )
+    def test_known_notices(self, text, expected):
+        assert classify_notice(text) == (expected, "ABCD1234")
+
+    def test_notices_without_an_order(self):
+        assert classify_notice(
+            "Уважаемые продавцы, не доверяйте сообщениям в чате! Перед выполнением заказа всегда проверяйте "
+            "наличие оплаты в разделе «Мои продажи»."
+        ) == (MessageType.DEAR_VENDORS, None)
+        assert classify_notice("Что-то новое от FunPay") == (MessageType.UNKNOWN_SYSTEM, None)
+        assert classify_notice("Что-то новое про заказ #ABCD1234") == (MessageType.UNKNOWN_SYSTEM, "ABCD1234")

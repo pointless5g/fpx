@@ -130,6 +130,16 @@ class TestProfileParser:
         with pytest.raises(fpx_err.FpxNullDataError):
             ProfileParser.parse_main_menu("<html><body>Пусто</body></html>")
 
+    def test_a_guest_page_is_not_someone_elses_account(self):
+        """Гостю FunPay показывает ссылки на чужие профили: это не наш аккаунт, а слетевшая сессия."""
+        html = (
+            '<html><body data-app-data=\'{"csrf-token": "t"}\'>'
+            '<a href="https://funpay.com/users/777/">Топ продавец</a></body></html>'
+        )
+        with pytest.raises(fpx_err.FpxUnauthorizedError) as error:
+            ProfileParser.parse_main_menu(html)
+        assert isinstance(error.value, fpx_err.FpxAuthError)
+
     def test_parse_main_menu_invalid_app_data_chains_cause(self):
         """Сломанный data-app-data → FpxParseError с исходным JSONDecodeError в __cause__."""
         html = """

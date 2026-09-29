@@ -428,3 +428,14 @@ class TestRequestEngineStaleCsrf:
         assert all(r.json() == {"ok": 1} for r in responses)
         assert account.profile.get_user_data.await_count == 1
         assert http_client.request.await_count == 16
+
+
+class TestRequestEngineAuth:
+    @pytest.mark.asyncio
+    async def test_403_is_an_auth_error(self, account, http_client):
+        response = make_response(403)
+        response.url = "https://funpay.com/chat/"
+        http_client.request = AsyncMock(return_value=response)
+        engine = RequestEngine(account, http_client)
+        with pytest.raises(fpx_err.FpxAuthError):
+            await engine.execute("GET", "/chat/")
